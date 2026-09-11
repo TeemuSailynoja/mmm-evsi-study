@@ -58,8 +58,9 @@ weights vary).
 - **Total budget** = currently planned budget for the quarter (sum of planned
   spend over all 7 channels — no residual; `FIXED_CHANNELS = []`).
 - **Per-channel box** = ±30% of the planned spend for that channel/quarter.
-  (Channel-level quarterly budgets; weekly/per-period adjustment is deferred
-  to a later phase.)
+  (Channel-level quarterly budgets over the full 7 channels; **no flighting
+  optimization for now** — week-by-week scheduling is deferred to a later
+  phase.)
 - **Experimentation budget** `E_max` caps Q1 revenue loss.
 
 All quantities are in expected **sales** units (the MMM target); sales,

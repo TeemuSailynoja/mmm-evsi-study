@@ -37,14 +37,20 @@ This is the "no drift" reference: every material decision gets an entry.
   axis is excluded from decision variables and only enters via a fixed
   `budget_distribution_over_period` pattern. So "3×13 independently adjustable
   weekly spends" and "period-specific bounds" (G0.4 i/ii) are unsupported.
-- **[DECIDED]** **Option A**: adopt the optimizer's real capability —
-  **channel-level quarterly budgets over the full 7 channels** (7 decision
-  variables), a constant weekly rate per channel across 13 weeks (matches the
-  case study). Outer BO dimensionality = **7**, not 39. **Weekly budget
-  adjustment is deferred to a later phase** (future Stage 5+ custom
-  optimizer). Rationale: matches the pinned API, keeps all constraints,
-  dramatically simplifies the BO; weekly granularity adds little information
-  value and is separable.
+- **[DECIDED]** **Option A — no flighting optimization for now.** Three
+  sub-decisions, recorded explicitly so the scope is unambiguous:
+  1. **Expand to the full 7 channels** (not the originally-planned 3): every
+     channel is optimized at channel level; `FIXED_CHANNELS = []`, `B_res = B`.
+  2. **Channel-level quarterly budgets** — one decision variable per channel,
+     a constant weekly rate per channel across the 13-week quarter (matches
+     the case study and the pinned optimizer's `budget_dims=['channel']`).
+  3. **Week-by-week (flighting) optimization is deferred to a later phase**
+     (future Stage 5+ custom optimizer with a `date` budget dim). The pinned
+     optimizer has no per-period decision variables; only a fixed
+     `budget_distribution_over_period` pattern.
+  Consequence: outer BO dimensionality = **7** (not 39). Rationale: matches
+  the pinned API, keeps all constraints, dramatically simplifies the BO;
+  weekly granularity adds little information value and is separable.
 - **[DECIDED]** Consequence: `config.OPTIMIZE_CHANNELS` = all 7 channels,
   `FIXED_CHANNELS = []`, `B_res = B` (no residual). The `budgets_to_optimize`
   mask capability is still probed (G0.4 iii) as a general capability, even

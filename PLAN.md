@@ -81,11 +81,12 @@ Why this is non-trivial:
    (4 chains × 8,000 draws) for high ESS in both bulk and tails — robust
    importance sampling. Save the fitted model + idata for loading.
 2. **Allocation shape & budget bookkeeping**: the case study has 7 channels;
-   **Decision (Option A): optimize channel-level quarterly budgets over the
-   FULL 7 channels** — 7 decision variables (one per channel), a constant
-   weekly rate per channel across the 13-week quarter (matches the case
-   study and the pinned optimizer's `budget_dims=['channel']`). **Weekly
-   (per-period) budget adjustment is deferred to a later phase.** No fixed
+   **Decision (Option A — no flighting optimization for now)**:
+   (1) **expand to the FULL 7 channels** (not 3); (2) **channel-level
+   quarterly budgets** — one decision variable per channel, a constant weekly
+   rate per channel across the 13-week quarter (matches the case study and
+   the pinned optimizer's `budget_dims=['channel']`); (3) **week-by-week
+   (flighting) optimization is deferred to a later phase**. No fixed
    channels, so the total-budget equality is **Σx = B** over all 7 channels
    (6 free dimensions). Outer BO dimensionality = **7**. BO flavor: **GP**
    (GPyTorch on GPU) or trust-region / particle swarm acceptable; start with
