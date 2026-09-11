@@ -73,7 +73,9 @@ YEARLY_SEASONALITY = 5
 TARGET_ACCEPT = 0.9
 CHAINS = 4
 DRAWS = 8_000  # 2x the case study's 4,000
-NUTS_SAMPLER = "nutpie"
+NUTS_SAMPLER = "nutpie"  # CPU: fastest for an MMM of this size (7 channels,
+                         # ~183 weekly rows); GPU (numpyro) only helps at
+                         # much larger multi-channel scales
 
 
 @dataclass(frozen=True)

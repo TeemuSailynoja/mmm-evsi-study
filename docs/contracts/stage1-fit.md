@@ -568,8 +568,10 @@ what `az.summary` yields on the idata).
 ## 7. Open questions / non-gated choices (recorded for the LOG)
 
 - `--tune` default **1000** (burn-in only; not gated by any Stage-1 gate).
-- `--sampler` accepts `nutpie|numpyro`; default `nutpie` (GPU fits should pass
-  `--sampler numpyro`; `target_accept=0.9` is passed for both).
+- `--sampler` accepts `nutpie|numpyro`; default `nutpie` (CPU — faster for an
+  MMM of this size; `--sampler numpyro` uses the JAX/CUDA GPU path, useful
+  only for much larger multi-channel MMMs; `target_accept=0.9` is passed for
+  both).
 - The fit script does **not** run baseline solves (separate step; the user
   triggers them via the G1.6 real test after the fit). No baseline script is
   planned; `solve_baseline` is tested directly.

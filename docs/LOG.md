@@ -20,17 +20,18 @@ This is the "no drift" reference: every material decision gets an entry.
   `c2260193ffaef464c77fb7e61cb4d0b0021be300`). Upgrade to the merged release
   later. Rationale: gives `SharedPosterior` + `BudgetOptimizer.set_posterior`
   (no-recompile draw rebinding), required by the whole pipeline.
-- **[DECIDED]** GPU: NVIDIA RTX A5000 (24 GiB), single GPU — no parallel
-  sub-agents; GPU tests are user-run.
+- **[DECIDED]** GPU: NVIDIA RTX A5000 (24 GiB), single GPU. GPU-dependent
+  tests (e.g. Stage 3 GP surrogate) are user-run.
 - **[GATE]** G0.1 PASS — `SharedPosterior` and `BudgetOptimizer.set_posterior`
   import from the PR-pinned install.
-- **[DECIDED]** Sampler: `nutpie` and `numpyro` were not installed; added
-  `numpyro==0.21.0` to use JAX+CUDA (RTX A5000) for GPU MCMC. The case-study
-  notebook used `nuts_sampler="pymc"`, but for 2× draws (4×8,000) the GPU
-  path (numpyro) is the practical choice. `numpyro` is a PyMC-supported
-  `nuts_sampler` value.
-- **[DECIDED]** Also added `nutpie==0.16.11` (user request) as an
-  alternative fast sampler; `config.NUTS_SAMPLER="nutpie"`.
+- **[DECIDED]** Sampler: added `nutpie==0.16.11` (user request) and
+  `numpyro==0.21.0` (JAX+CUDA path, PyMC-supported `nuts_sampler` value).
+  `config.NUTS_SAMPLER="nutpie"` (default). **CPU (nutpie) is the faster
+  choice for an MMM of this size** — 7 channels, weekly, ~183 training weeks
+  — GPU only pays off for much larger multi-channel MMMs; numpyro is kept as
+  an optional alternative, not the preferred sampler here.
+  (Correction 2026-09-11: earlier log claimed numpyro/GPU was the practical
+  choice for 2× draws — withdrawn; CPU nutpie is faster at this scale.)
 - **[PROBLEM]** Stage 0 capability probe (W1 + orchestrator introspection)
   found a plan-vs-reality mismatch: the pinned optimizer allocates **per
   channel**, not per week. `budget_dims=['channel']` (shape (7,)); the `date`
