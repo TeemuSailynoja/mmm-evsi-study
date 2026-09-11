@@ -21,17 +21,29 @@ SKIP_MSG = (
 )
 
 _idata_file = getattr(config, "IDATA_FILE", None)
-if not (_idata_file and _idata_file.is_dir()):
+_model_file = getattr(config, "MODEL_FILE", None)
+if not (
+    _idata_file and _idata_file.is_dir() and _model_file and _model_file.is_dir()
+):
     pytest.skip(SKIP_MSG, allow_module_level=True)
 
 
 def _summary():
-    """Return (idata, pooled wide-format az.summary) from the artifact."""
+    """Return (idata, pooled wide-format az.summary over FREE RVs).
+
+    The summary is limited to the model's free random variables
+    (``[var.name for var in mmm.model.free_RVs]``) so the deterministic
+    ``*_contribution`` variables (zero-spend weeks -> NaN r-hat/ESS) are
+    excluded, matching the fit script's ``sampler_diagnostics`` derivation.
+    """
     import arviz as az
     import xarray as xr
+    from pymc_marketing.mmm import MMM
 
     idata = xr.open_datatree(str(_idata_file), engine="zarr")
-    return idata, az.summary(idata, fmt="wide")
+    mmm = MMM.load(str(_model_file))
+    var_names = [var.name for var in mmm.model.free_RVs]
+    return idata, az.summary(idata, var_names=var_names, fmt="wide")
 
 
 def test_pooled_ess_thresholds():

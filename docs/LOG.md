@@ -115,3 +115,29 @@ This is the "no drift" reference: every material decision gets an entry.
   asserting its absence — now asserts Q1 emits **no** cold-start warning and
   Q2 **does** (via `warnings.catch_warnings(record=True)`). Suite re-run:
   15 passed, 5 skipped.
+
+## 2026-09-11 — Stage 1 fit completed (all gates green)
+
+- **[DECIDED]** Fit is **CPU (nutpie)** — faster for this MMM size; GPU
+  permission was offered as a one-time exception but was not needed for the
+  fit (CPU) or the Stage-2 toy (CPU). GPU will matter later (Stage 3 GP
+  surrogate / Stage 5 JAX).
+- **[PROBLEM]** First 4×8,000 fit (tune=1000, target_accept=0.9) had
+  `n_divergences=4` (all in chain 1) and `n_rhat_nan=3953`.
+- **[RESOLVED]** (a) NaN r-hat: `sampler_diagnostics` now restricts the summary
+  to the model's **free random variables**
+  (`var_names=[var.name for var in mmm.model.free_RVs]`), excluding the
+  deterministic `*_contribution` variables whose zero-spend weeks made the
+  posterior an array of zeros → NaN r-hat. `n_rhat_nan` 3953 → 0. (b)
+  divergences: tune 1000→2000 dropped 4→1; `--target-accept 0.95` (new CLI
+  flag) dropped it to **0**. Fit script also made idempotent (cleans stale
+  zarr artifacts before writing; `w-` mode otherwise fails on re-run).
+- **[GATE]** Final accepted fit (tune=2000, target_accept=0.95, seed 0):
+  `n_effective_samples=32,000`, `min_ess_bulk=5,480.6`, `min_ess_tail=7,470.0`,
+  `max_rhat=1.0022`, `n_divergences=0`. Recorded verbatim in
+  `data/fit/fit_summary.json`.
+- **[GATE]** **Stage 1 complete**: full suite `24 passed, 0 skipped` —
+  G1.1 (zarr round-trip), G1.2 (windows), G1.3 (32,000 draws), G1.4 (sampler
+  health), G1.5 (budgets), G1.6 (baseline Q1/Q2 solves + optimality smoke).
+  Q2 baseline solve emits the expected cold-start carry-in warning (tolerated;
+  Q1 must not warn — asserted).

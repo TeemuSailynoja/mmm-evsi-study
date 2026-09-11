@@ -242,13 +242,24 @@ test-local stand-in, never routed through `load_budgets`.)
 ### 2.3 `src/mmm_evsi/diagnostics.py` (new — shared G1.4 quantities)
 
 ```python
-def sampler_diagnostics(idata: xr.DataTree) -> dict[str, float | int]
+def sampler_diagnostics(
+    idata: xr.DataTree, var_names: list[str] | None = None
+) -> dict[str, float | int]
 ```
+
+**`var_names` (REQUIRED for the case-study MMM, 2026-09-11 fix):** limit the
+summary to the model's **free random variables**
+(`[var.name for var in mmm.model.free_RVs]`). The posterior group also holds
+deterministic `*_contribution` variables (`channel_contribution` etc.) with
+zero-spend weeks that yield NaN r-hat/ESS when summarized — summarizing them
+produced `n_rhat_nan == 3953` (fixed to 0 by restricting to free RVs). The
+fit script passes the free-RV names; the G1.4 test derives them from the
+loaded model identically.
 
 Implementations (mandatory, matching the G1.4 test exactly):
 
 ```python
-summ = az.summary(idata, fmt="wide")               # pooled (chain+draw)
+summ = az.summary(idata, var_names=var_names, fmt="wide")  # pooled
 rhat = summ["r_hat"].dropna()
 return {
     "min_ess_bulk":    float(summ["ess_bulk"].min()),
@@ -324,12 +335,14 @@ Usage (argparse, all options with defaults):
 
 ```
 python scripts/fit_case_study.py [--data PATH] [--outdir PATH] [--chains N]
-    [--draws N] [--tune N] [--sampler {nutpie,numpyro}] [--seed N]
+    [--draws N] [--tune N] [--sampler {nutpie,numpyro}] [--target-accept F]
+    [--seed N]
 ```
 
 Defaults: `--data config.RAW_CSV`, `--outdir config.ARTIFACTS_DIR`,
 `--chains config.CHAINS (4)`, `--draws config.DRAWS (8000)`,
-`--tune 1000`, `--sampler config.NUTS_SAMPLER ("nutpie")`, `--seed 0`.
+`--tune 1000`, `--sampler config.NUTS_SAMPLER ("nutpie")`,
+`--target-accept config.TARGET_ACCEPT (0.9)`, `--seed 0`.
 
 Behavior, in order:
 1. Bootstrap `sys.path` (insert `<repo>/src`) so `import mmm_evsi…` works
@@ -353,7 +366,7 @@ Behavior, in order:
    mmm.fit(train.drop(columns=[config.SALES_COLUMN]),
            y=train[config.SALES_COLUMN],
            chains=args.chains, draws=args.draws, tune=args.tune,
-           target_accept=config.TARGET_ACCEPT, nuts_sampler=args.sampler,
+           target_accept=args.target_accept, nuts_sampler=args.sampler,
            random_seed=args.seed, progressbar=True)
    ```
    No `compute_log_likelihood` argument (PyMC 6.2 `.sample` has none; the
@@ -364,7 +377,8 @@ Behavior, in order:
    IDATA_FILE.name`:
    `mmm.save(str(model_file))`; `mmm.idata.to_zarr(str(idata_file))`.
 7. Write `fit_summary.json` at `outdir / SUMMARY_FILE.name` using
-   `sampler_diagnostics(mmm.idata)` and the schema of Section 1.3 (with paths
+   `sampler_diagnostics(mmm.idata, var_names=[var.name for var in
+   mmm.model.free_RVs])` and the schema of Section 1.3 (with paths
    rebased to `outdir`).
 8. Print: artifact paths, `n_effective_samples`, `min_ess_bulk`,
    `min_ess_tail`, `max_rhat`, `n_divergences`.
@@ -447,7 +461,7 @@ artifact-present branch**, so collection never breaks while they are absent.
 | G1.1 | `tests/test_fit_artifacts.py` | Skip if `MODEL_FILE`/`IDATA_FILE` missing. Else round-trip: `MMM.load(str(MODEL_FILE))` is an `MMM`; `mmm.idata["posterior"].sizes["chain"] == CHAINS`; `sizes["draw"] == DRAWS`; channel coords == `CHANNEL_COLUMNS`; `xr.open_datatree(IDATA_FILE, engine="zarr")` posterior sizes identical and `adstock_alpha` values `np.allclose` to the loaded model's; `"diverging" in sample_stats`. |
 | G1.2 | `tests/test_fit_window.py` | **Runs now.** (a) Stored windows: disjoint, in order, contiguous (test computes the +7 d joins), equal the dataset span, week counts 183/13/13 — computed from `config` constants + `pd.read_csv(config.RAW_CSV)` only (NO `mmm_evsi.load_mmm` import; self-contained). (b) `select_window(df, TRAIN_WINDOW)` selects exactly 183 rows — guarded by `pytest.importorskip("mmm_evsi.load_mmm")` (skips cleanly if the module is not yet present, runs otherwise). (c) Artifact part: `observed_data` date range ⊆ `TRAIN_WINDOW` — **skip if artifacts absent** (guard via `getattr(config, "MODEL_FILE", None)`). |
 | G1.3 | `tests/test_posterior_size.py` | (new file; the brief left the name open) Skip if artifacts absent. Else `chain * draw >= 4 * 8000` from `idata["posterior"].sizes`. Also asserts the script defaults satisfy it: `CHAINS * DRAWS >= 32_000` (always runs, pure config). |
-| G1.4 | `tests/test_sampler_health.py` | Skip if artifacts absent. Else open `IDATA_FILE`, compute `az.summary(idata, fmt="wide")`: `ess_bulk.min() >= 2000`, `ess_tail.min() >= 2000` (pooled), `r_hat.dropna().max() < 1.01`, `n_divergences == 0`. |
+| G1.4 | `tests/test_sampler_health.py` | Skip if artifacts absent. Else load `MODEL_FILE` (for `mmm.model.free_RVs`) + `IDATA_FILE`, compute `az.summary(idata, var_names=[var.name for var in mmm.model.free_RVs], fmt="wide")`: `ess_bulk.min() >= 2000`, `ess_tail.min() >= 2000` (pooled), `r_hat.dropna().max() < 1.01`, `n_divergences == 0`. |
 | G1.5 | `tests/test_budgets.py` | **Runs now.** From the raw CSV + config: planned per channel per quarter; `planned.keys() == set(CHANNEL_COLUMNS)`; `B_Q1/B_Q2` == sum of planned (tol 1e-6); boxes == `(0.7p, 1.3p)` (tol 1e-6). Imports `mmm_evsi.budgets` (exists at gate-run time — see 6.1 ordering). |
 | G1.6 | `tests/test_baseline_solves.py` | **Toy part runs now** (self-contained on `toy_mmm`, no `mmm_evsi.baseline` import). **Real part** skips if artifacts absent; else lazily imports `load_mmm`, `load_budgets`, `solve_baseline` and solves Q1 and Q2. |
 
@@ -520,7 +534,7 @@ def test_real_baseline_solves():
 | Window misalignment | `select_window` with `start > end` or empty selection → `ValueError`; G1.2 asserts the constant windows are disjoint/ordered/covering, so a bad edit fails the gate. |
 | Non-contiguous window run (real Q2) | Benign `UserWarning` "…not contiguous… cold start (zeros)". Expected; tests use `pytest.warns`/`filterwarnings` to tolerate it. Q1 (contiguous) must NOT warn. |
 | `allocate_budget` solver failure | Raises `MinimizeException` (default `return_if_fail=False`). Gates assert `success`, so the raise-path is not exercised. |
-| `r_hat` NaN (constant var / single chain) | `sampler_diagnostics` drops NaNs before `max` and reports `n_rhat_nan`. With the 4×8,000 fit this is expected to be 0. |
+| `r_hat` NaN (deterministic vars / zero-spend weeks) | Fixed by restricting to free RVs (`var_names=[var.name for var in mmm.model.free_RVs]`); `n_rhat_nan` is 0 for the free-RV summary. `sampler_diagnostics` still drops NaNs before `max` defensively. |
 | DataTree access | Bracket access only (`idata["posterior"]`, `idata["sample_stats"]`). `fit_result` (Dataset) must not be used by tests. |
 | Human names requested | `config.CHANNEL_MAPPING` only; any code path treating human names as optimizer keys raises (see budget_bounds row). |
 

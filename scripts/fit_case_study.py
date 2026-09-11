@@ -84,6 +84,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"sampler backend (default: {config.NUTS_SAMPLER})",
     )
     parser.add_argument(
+        "--target-accept",
+        type=float,
+        default=config.TARGET_ACCEPT,
+        help=f"NUTS target_accept (default: {config.TARGET_ACCEPT})",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=0,
@@ -125,24 +131,34 @@ def main(argv: list[str] | None = None) -> None:
         chains=args.chains,
         draws=args.draws,
         tune=args.tune,
-        target_accept=config.TARGET_ACCEPT,
+        target_accept=args.target_accept,
         nuts_sampler=args.sampler,
         random_seed=args.seed,
         progressbar=True,
     )
 
-    # 6. Write Zarr artifacts (not NetCDF).
+    # 6. Write Zarr artifacts (not NetCDF). Remove stale artifacts first so
+    #    re-runs are idempotent (zarr 'w-' mode fails on existing stores).
     outdir = args.outdir
     outdir.mkdir(parents=True, exist_ok=True)
     model_file = outdir / config.MODEL_FILE.name
     idata_file = outdir / config.IDATA_FILE.name
     summary_file = outdir / config.SUMMARY_FILE.name
+    import shutil
+
+    for stale in (model_file, idata_file, summary_file):
+        if stale.exists():
+            shutil.rmtree(stale) if stale.is_dir() else stale.unlink()
     mmm.save(str(model_file))
     mmm.idata.to_zarr(str(idata_file))
 
     # 7. fit_summary.json (schema: contract §1.3; diagnostics = the 5 gated
-    #    fields; chain/draw/n_effective_samples live under "fit").
-    diag = sampler_diagnostics(mmm.idata)
+    #    fields; chain/draw/n_effective_samples live under "fit"). Diagnostics
+    #    are limited to the model's FREE random variables (excludes the
+    #    deterministic *_contribution variables whose zero-spend weeks yield
+    #    NaN r-hat/ESS when summarized).
+    var_names = [var.name for var in mmm.model.free_RVs]
+    diag = sampler_diagnostics(mmm.idata, var_names=var_names)
     summary = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "data": {
@@ -158,7 +174,7 @@ def main(argv: list[str] | None = None) -> None:
             "draws": args.draws,
             "tune": args.tune,
             "sampler": args.sampler,
-            "target_accept": config.TARGET_ACCEPT,
+            "target_accept": args.target_accept,
             "random_seed": args.seed,
             "n_effective_samples": diag["n_effective_samples"],
             "adstock": f"GeometricAdstock(l_max={config.ADSTOCK_L_MAX})",
