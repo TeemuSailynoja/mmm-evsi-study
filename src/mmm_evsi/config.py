@@ -14,6 +14,16 @@ from pathlib import Path
 DATA_URL = "https://raw.githubusercontent.com/sibylhe/mmm_stan/main/data.csv"
 RAW_CSV = Path("/tmp/mmm_stan.csv")
 
+# ---------------------------------------------------------------------------
+# Repo paths & artifact layout (single source of truth; CWD-agnostic)
+# ---------------------------------------------------------------------------
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = REPO_ROOT / "data"
+ARTIFACTS_DIR = DATA_DIR / "fit"
+MODEL_FILE = ARTIFACTS_DIR / "case_study_mmm.zarr"  # directory (zarr store)
+IDATA_FILE = ARTIFACTS_DIR / "case_study_idata.zarr"  # directory (zarr store)
+SUMMARY_FILE = ARTIFACTS_DIR / "fit_summary.json"
+
 DATE_COLUMN = "wk_strt_dt"
 SALES_COLUMN = "sales"
 

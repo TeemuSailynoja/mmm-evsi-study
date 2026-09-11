@@ -71,3 +71,46 @@ This is the "no drift" reference: every material decision gets an entry.
   `docs/contracts/stage0-tests.md` pinned the API facts for later stages
   (channel-level budgets; first `set_posterior` recompiles, later calls do
   not; `fit(X, y)` signature; transformers import path). Committed.
+
+## 2026-09-11 — Stage 1: case-study fit + baselines
+
+- **[DECIDED]** **Parallel W1+W2 execution.** Earlier "no parallel sub-agents"
+  was about GPU compute, not the (cloud) subagent LLMs. User directed:
+  parallelize W1 (implementation) + W2 (gates) after the contract is agreed.
+  File partition is disjoint (W1: `src/`+`scripts/`; W2: `tests/` only);
+  shared files (`config.py` additions, `pyproject.toml` `pythonpath=["src"]`,
+  `.gitignore` `/data/`) were landed by the orchestrator before the parallel
+  phase so both children could rely on them. Gate running stays sequenced
+  after W1/W2 land; R still reviews code+docs after.
+- **[DECIDED]** **Case-study actual posterior size**: the PR #3002 notebook
+  fits `chains=6, draws=800` (4,800 total), NOT the 4,000 assumed in PLAN.
+  Our target `CHAINS=4, DRAWS=8000` (32,000) therefore exceeds "2×" by a wide
+  margin — kept as-is (more conservative; G1.3 gates on ≥32,000).
+- **[PROBLEM]** Contract-exact `allocate_budget(total_budget, budget_bounds,
+  x0=None)` failed the **Q1** baseline solve with
+  `MinimizeException: Positive directional derivative for linesearch` (pinned
+  SLSQP `ftol=1e-9` on an objective of scale ~5e9; deterministic across seeds
+  0/1 and 50/1000-draw fits; gradient verified vs. FD to 7e-9). Q2 converged.
+- **[RESOLVED]** `solve_baseline` passes `minimize_kwargs={"options":
+  {"ftol": 1e-6}}` (scipy default). Q1/Q2 converge to the **identical**
+  optimum; all G1.6 result assertions unchanged. Contract §2.4 amended and
+  `baseline.py` docstring records the rationale. Verified on the 1000-draw
+  mini-fit: Q1 nit=27, Q2 nit=28, |Σx−B|=0.
+- **[DECIDED]** Artifacts are **Zarr**, not NetCDF (`netCDF4`/`h5netcdf` not
+  installed). `MMM.save`/`MMM.load` dispatch on the `.zarr` extension;
+  `mmm.idata.to_zarr(...)` for the standalone snapshot. Channel coords are the
+  **raw `mdsp_*` names** (no renaming in the pinned `MMM`), so `budget_bounds`
+  and boxes are keyed by raw names; human names (`CHANNEL_MAPPING`) are
+  reporting-only.
+- **[DECIDED]** Non-gated choices (contract §7): `--tune` default 1000; fit
+  script does NOT run baseline solves (tested via G1.6); `load_budgets` takes
+  the raw df (never idata — the posterior tree has no Q1/Q2 spend).
+- **[GATE]** Stage 1 runs-now gates: **15 passed, 5 skipped** (G1.2, G1.5,
+  toy-G1.6 green; Stage-0 regression green). G1.1 / G1.3 / G1.4 / G1.2(c) /
+  real-G1.6 skip until the user runs the 4×8,000 fit (artifact-gated).
+- **[GATE]** R (code+docs review) returned **blocked** on two items, both
+  resolved: (1) missing Stage 1 LOG section — added (this section);
+  (2) `test_baseline_solves.py` suppressed the Q1 cold-start warning without
+  asserting its absence — now asserts Q1 emits **no** cold-start warning and
+  Q2 **does** (via `warnings.catch_warnings(record=True)`). Suite re-run:
+  15 passed, 5 skipped.

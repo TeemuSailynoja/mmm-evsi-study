@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Stage 1 model artifacts (large, user-generated)
+/data/

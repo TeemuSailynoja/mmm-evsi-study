@@ -19,3 +19,6 @@ pymc-marketing = { git = "https://github.com/PabloRoque/pymc-marketing.git", rev
 dev = [
     "pytest>=9.1.1",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
