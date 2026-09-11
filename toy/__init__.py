@@ -1,0 +1,1 @@
+"""Analytic toy models for the mmm-evsi study (pure numpy, no MCMC)."""

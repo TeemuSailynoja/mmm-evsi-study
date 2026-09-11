@@ -77,6 +77,19 @@ NUTS_SAMPLER = "nutpie"  # CPU: fastest for an MMM of this size (7 channels,
                          # ~183 weekly rows); GPU (numpyro) only helps at
                          # much larger multi-channel scales
 
+# ---------------------------------------------------------------------------
+# Stage 2 — importance sampling parameters (additive; see
+# docs/contracts/stage2-weighted.md)
+# ---------------------------------------------------------------------------
+K_HAT_THRESHOLD = 0.7  # k-hat > threshold => skip the simulated quarter (G2.3)
+N_SIM_OUTCOMES = 5  # default simulated quarters per allocation (G2.9 smoke);
+                    # gates/sweeps pass larger values explicitly
+RESAMPLE_SEED = 0  # default seeded RNG for the multinomial resample
+MIN_POOLED_DRAWS = 25  # psislw tail-fit floor (n_draws_tail >= 5); asserted
+RESAMPLE_DRAWS = 2_000  # resample size for the Q2 solve (the 32k original
+                        # posterior is for IS coverage; 2k is enough for the
+                        # weighted optimization)
+
 
 @dataclass(frozen=True)
 class BudgetConfig:

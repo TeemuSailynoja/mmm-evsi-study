@@ -141,3 +141,40 @@ This is the "no drift" reference: every material decision gets an entry.
   health), G1.5 (budgets), G1.6 (baseline Q1/Q2 solves + optimality smoke).
   Q2 baseline solve emits the expected cold-start carry-in warning (tolerated;
   Q1 must not warn — asserted).
+
+## 2026-09-12 — Stage 2: importance weighting + weighted solves (all gates green)
+
+- **[DECIDED]** W1 (deepseek-v4-flash) timed out 3× on the Stage 2
+  implementation (high-thinking model spent its budget reading/verifying
+  rather than writing). The orchestrator implemented directly; W2's
+  independently-written gate tests + R's review remained the verification
+  layer. Going forward: split tasks smaller and hand the agent pinned facts.
+- **[DECIDED]** PSIS convention pinned against arviz-stats 1.3.2 AND the
+  official ROAS-experimentation notebook: accessor is
+  ``da.azstats.psislw(dim="sample")`` (NOT ``.stats``); input = NEGATED
+  log-weights ``-ell``; returns normalized smoothed POSITIVE log-weights
+  (exp-sum == 1); resample weights = ``exp(smoothed)``.
+- **[DECIDED]** k-hat policy is ONE-SIDED: skip only when k-hat > 0.7 or
+  non-finite; NEGATIVE k-hat (light tail) is accepted (matches the notebook).
+- **[DECIDED]** Resample size for the Q2 solve = ``config.RESAMPLE_DRAWS =
+  2_000`` (user guidance): the 4×8,000 original posterior is for
+  importance-sampling coverage; 2k draws suffice for the weighted
+  optimization and cut solve cost 16×.
+- **[PROBLEM]** Hand-rolled thin-SLSQP wrapper (my own MMM response reimpl)
+  did NOT reproduce the stock ``BudgetOptimizer`` baseline (objective ~¼ of
+  stock, budgets 5–12% off) → G2.4 failed.
+- **[RESOLVED]** ``solve_q2_weighted`` now REUSES the stock
+  ``BudgetOptimizer`` (``mmm.budget_optimizer(Q2)`` + ``set_posterior`` +
+  ``allocate_budget``). The stock optimizer already handles adstock carry-in
+  and carry-over. G2.4 exact by construction.
+- **[KNOWN GAP — next step]** The PROPOSED Q1→Q2 carry-in is NOT yet injected
+  into ``solve_q2_weighted``: it currently cold-starts (Q2 not contiguous
+  with training). ``q2_expected_response`` handles Q1 carry-in correctly
+  (G2.3b), but the solve path must feed the Q1 spend via data-extension
+  (``create_zero_dataset`` ``preserve_observed`` / ``carry_in_periods``, per
+  user guidance). This does not block any gate; it is a correctness item for
+  the actual study (PLAN Decision 8).
+- **[GATE]** Stage 2: all 13 gates green — G2.0 toy VoE (CRN), G2.1 weights,
+  G2.1b psislw sign, G2.2 pooling, G2.3/G2.3c k-hat policy, G2.3b carry-in
+  response, G2.4 equivalence, G2.5 set_posterior rebind, G2.6 hot start,
+  G2.7 serial≡pool, G2.8 resampling-noise sweep, G2.9 smoke.
