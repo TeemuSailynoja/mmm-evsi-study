@@ -19,6 +19,7 @@ import xarray as xr
 from mmm_evsi import config
 from mmm_evsi.budgets import QuarterBudget
 from mmm_evsi.importance import _extract_mu_graph
+from pymc_marketing.mmm.budget_optimizer import MinimizeException
 
 
 @dataclass(frozen=True)
@@ -155,22 +156,45 @@ def solve_q2_weighted(
     )
 
 
-def _solve_job(args) -> Q2SolveResult:
-    """Worker entry point: load the MMM from disk (never pickled), solve one
-    job against its resampled posterior and Q1→Q2 carry-in."""
-    model_file, df, q2_cfg, job = args
-    import sys
-    from pathlib import Path
-
-    repo = Path(config.REPO_ROOT)
-    if str(repo / "src") not in sys.path:
-        sys.path.insert(0, str(repo / "src"))
-    from mmm_evsi.load_mmm import load_mmm
-
-    mmm, _ = load_mmm(model_file)
-    res = _solve_q2_core(
-        mmm, job.posterior, df, q2_cfg, job.q1_weekly_spend, job.x0, None
-    )
+def _solve_on_wrapper(wrapper, q2_cfg: QuarterBudget, job: WeightedSolveJob) -> Q2SolveResult:
+    """One solve on an already-compiled shared wrapper: swap carry-in +
+    posterior, then allocate. No compilation here."""
+    wrapper.set_q1_carry_in(np.asarray(job.q1_weekly_spend, dtype=float))
+    wrapper.set_posterior(job.posterior)
+    try:
+        res = wrapper.allocate_budget(
+            total_budget=q2_cfg.total,
+            budget_bounds=q2_cfg.boxes,
+            x0=job.x0,
+            minimize_kwargs={"options": {"ftol": 1e-6}},
+        )
+    except MinimizeException:
+        # SLSQP's line search is marginally sensitive to BLAS/numba thread
+        # reductions under CPU contention (flaky "Positive directional
+        # derivative"); retry once with a looser tolerance — the solution
+        # shift is second-order.
+        res = wrapper.allocate_budget(
+            total_budget=q2_cfg.total,
+            budget_bounds=q2_cfg.boxes,
+            x0=job.x0,
+            minimize_kwargs={"options": {"ftol": 1e-4}},
+        )
+    if not res.scipy_result.success:
+        raise RuntimeError(
+            f"Q2 weighted solve did not converge (success=False; "
+            f"{res.scipy_result.message})"
+        )
+    total = float(res.budgets.sum())
+    if abs(total - q2_cfg.total) > 1e-4:
+        raise RuntimeError(
+            f"Q2 weighted solve |sum(x) - B| = {abs(total - q2_cfg.total)} > 1e-4"
+        )
+    channels = list(res.budgets.coords["channel"].values)
+    for c in channels:
+        lo, hi = q2_cfg.boxes[c]
+        v = float(res.budgets.sel(channel=c))
+        if not (lo - 1e-4 <= v <= hi + 1e-4):
+            raise RuntimeError(f"channel {c} budget {v} outside box ({lo}, {hi})")
     return Q2SolveResult(
         outcome_index=job.outcome_index,
         y_star=job.y_star,
@@ -178,11 +202,24 @@ def _solve_job(args) -> Q2SolveResult:
         khat=job.khat,
         weight_ess=job.weight_ess,
         budgets=res.budgets,
-        objective_value=res.objective_value,
-        iteration_count=res.iteration_count,
+        objective_value=-float(res.scipy_result.fun),
+        iteration_count=int(res.scipy_result.nit),
         scipy_result=res.scipy_result,
         skipped=False,
     )
+
+
+# Fork-inherited shared state for the process pool: the compiled wrapper is
+# built ONCE in the parent and inherited copy-on-write by fork() workers, so
+# parallel solves pay no per-worker compile.
+_SHARED_WRAPPER = None
+_SHARED_Q2_CFG = None
+
+
+def _solve_job_shared(job: WeightedSolveJob) -> Q2SolveResult:
+    if _SHARED_WRAPPER is None or _SHARED_Q2_CFG is None:
+        raise RuntimeError("fork-inherited shared wrapper missing in worker")
+    return _solve_on_wrapper(_SHARED_WRAPPER, _SHARED_Q2_CFG, job)
 
 
 def run_weighted_solves(
@@ -192,33 +229,26 @@ def run_weighted_solves(
     q2_cfg: QuarterBudget,
     n_processes: int | None = None,
 ) -> list[Q2SolveResult]:
-    """Solve a list of weighted Q2 jobs (serial or process pool)."""
+    """Solve a list of weighted Q2 jobs with ONE objective compile.
+
+    The ``CarryInBudgetOptimizer`` is built once (single compile); each job
+    then only swaps carry-in + posterior. ``n_processes > 1`` forks a process
+    pool whose workers inherit the compiled wrapper copy-on-write (no
+    per-worker compile either). Results are in job order and deterministic.
+    """
+    from mmm_evsi.carry_in_optimizer import CarryInBudgetOptimizer
+
     if n_processes is None:
         n_processes = os.cpu_count() or 1
+    jobs = list(jobs)
+    wrapper = CarryInBudgetOptimizer(mmm, q2_cfg.window[0], q2_cfg.window[1])
     if n_processes == 1 or len(jobs) <= 1:
-        return [_wrap(j, mmm, df, q2_cfg) for j in jobs]
+        return [_solve_on_wrapper(wrapper, q2_cfg, j) for j in jobs]
+
+    global _SHARED_WRAPPER, _SHARED_Q2_CFG
+    _SHARED_WRAPPER = wrapper
+    _SHARED_Q2_CFG = q2_cfg
     from concurrent.futures import ProcessPoolExecutor
 
-    model_file = str(config.MODEL_FILE)
     with ProcessPoolExecutor(max_workers=n_processes) as ex:
-        return list(
-            ex.map(_solve_job, [(model_file, df, q2_cfg, j) for j in jobs])
-        )
-
-
-def _wrap(job, mmm, df, q2_cfg) -> Q2SolveResult:
-    res = _solve_q2_core(
-        mmm, job.posterior, df, q2_cfg, job.q1_weekly_spend, job.x0, None
-    )
-    return Q2SolveResult(
-        outcome_index=job.outcome_index,
-        y_star=job.y_star,
-        allocation=job.allocation,
-        khat=job.khat,
-        weight_ess=job.weight_ess,
-        budgets=res.budgets,
-        objective_value=res.objective_value,
-        iteration_count=res.iteration_count,
-        scipy_result=res.scipy_result,
-        skipped=False,
-    )
+        return list(ex.map(_solve_job_shared, jobs))

@@ -229,3 +229,26 @@ This is the "no drift" reference: every material decision gets an entry.
   machine precision, zero box violations. Allocations: my implementation IS
   the stock machinery (+ shared carry-in); G-CI-2 proves identical
   allocations (rtol 1e-4).
+
+## 2026-09-12 — single-compile wiring + benchmark (user direction)
+
+- **[DECIDED]** `resample_posterior` rewritten to the official
+  ROAS-experimentation notebook's function (chain_idx/draw_idx indexing) with
+  one change: the resampled draws reshape to `(n_chains, n//n_chains)`
+  (`RESAMPLE_DRAWS=2000` -> 4 x 500). `pool_posterior` now returns a PLAIN
+  `sample` dim (multiindex dropped) and stashes `pooled_n_chains/draws` in
+  attrs so pooled callers still work.
+- **[DECIDED]** `run_weighted_solves` builds the `CarryInBudgetOptimizer`
+  ONCE; serial jobs only swap carry-in + posterior. `n_processes>1` forks a
+  pool whose workers inherit the compiled wrapper copy-on-write (no
+  per-worker compile). SLSQP line-search is marginally sensitive to
+  BLAS/numba thread reductions under CPU contention (flaky "Positive
+  directional derivative"); `_solve_on_wrapper` retries once at ftol=1e-4
+  and the post-solve tolerances are 1e-4 (budget-level, consistent with the
+  rtol 1e-4 gates).
+- **[BENCHMARK]** Real model: build 37s (once); swap-only solve **0.7s**
+  (2000 draws); pool 2/4 procs ≈ 41s for 6 solves (build-dominated). Baseline
+  arm n=100 outcomes ≈ 2 min serial / ≈ 1 min on 8 procs.
+- **[PROBLEM/RESOLVED]** `/tmp/pymc_marketing` (old checkout) shadows the
+  pinned install when scripts run from /tmp — caused the phantom
+  "set_posterior missing" failures. Always run scripts from the repo cwd.

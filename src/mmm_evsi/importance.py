@@ -37,12 +37,22 @@ class WeightError(ValueError):
 
 def pool_posterior(posterior: xr.Dataset | xr.DataTree) -> xr.Dataset:
     """Stack (chain, draw) -> (sample,) (chain-major). Accepts a Dataset or
-    a DataTree posterior node (``idata["posterior"]``)."""
+    a DataTree posterior node (``idata["posterior"]``). The stacked
+    MultiIndex is dropped so ``sample`` is a PLAIN positional dim, and the
+    original chain/draw counts are stashed in attrs so ``resample_posterior``
+    can reconstruct the (chain, draw) layout."""
     if isinstance(posterior, xr.DataTree):
         posterior = posterior.to_dataset()
     if "sample" in posterior.dims:
         raise ValueError("'sample' dim already present; posterior is already pooled")
-    return posterior.stack(sample=("chain", "draw"))
+    n_chains = posterior.sizes["chain"]
+    n_draws = posterior.sizes["draw"]
+    stacked = posterior.stack(sample=("chain", "draw"))
+    stacked = stacked.drop_vars(["sample", "chain", "draw"], errors="ignore")
+    stacked = stacked.assign_coords(sample=np.arange(stacked.sizes["sample"]))
+    stacked.attrs["pooled_n_chains"] = n_chains
+    stacked.attrs["pooled_n_draws"] = n_draws
+    return stacked
 
 
 def normalized_log_weights(ell: np.ndarray) -> np.ndarray:
@@ -140,28 +150,75 @@ def resample_posterior(
     n: int | None = None,
     seed: int = config.RESAMPLE_SEED,
 ) -> xr.Dataset:
-    """Multinomial-resample a pooled posterior (dims ("sample",)) -> (chain=1,
-    draw=n) Dataset suitable for ``BudgetOptimizer.set_posterior``."""
-    if "sample" not in posterior.dims:
-        # Accept an unpooled (chain, draw) posterior: flatten chain-major.
-        posterior = posterior.stack(sample=("chain", "draw"))
-    s = posterior.sizes["sample"]
+    """Weighted resample — the official ROAS-experimentation notebook's
+    function (chain_idx/draw_idx indexing), with one change: the resampled
+    draws are RESHAPED to ``(n_chains, n // n_chains)`` so the optimizer
+    receives a multi-chain posterior (RESAMPLE_DRAWS=2000 -> 4 x 500).
+
+    Accepts either the unpooled ``(chain, draw)`` posterior or a pooled
+    ``(sample,)`` one from ``pool_posterior`` (its attrs carry the original
+    chain/draw counts; the flat sample axis is chain-major, matching the
+    flattened ``probabilities``).
+    """
+    rng = np.random.default_rng(seed)
+    if "sample" in posterior.dims:
+        n_chains = posterior.attrs.get("pooled_n_chains")
+        n_draws = posterior.attrs.get("pooled_n_draws")
+        if not n_chains:
+            raise WeightError(
+                "pooled posterior lacks pooled_n_chains/pooled_n_draws attrs; "
+                "pass the unpooled (chain, draw) posterior or pool via "
+                "pool_posterior"
+            )
+        s = posterior.sizes["sample"]
+        ds = xr.Dataset()
+        for name, da in posterior.data_vars.items():
+            # Move the sample axis to the front, then split chain-major into
+            # (chain, draw) — 'sample' may sit at any position.
+            axis = da.dims.index("sample")
+            arr = np.moveaxis(da.values, axis, 0)  # (S, ...)
+            rest = [d for d in da.dims if d != "sample"]
+            shape2 = (n_chains, n_draws) + arr.shape[1:]
+            ds[name] = xr.DataArray(
+                arr.reshape(shape2),
+                dims=("chain", "draw", *rest),
+                coords={d: da.coords[d].values for d in rest if d in da.coords},
+            )
+        posterior = ds
+    else:
+        n_chains = posterior.sizes["chain"]
+        n_draws = posterior.sizes["draw"]
+        s = n_chains * n_draws
+
     n = s if n is None else n
-    p = np.asarray(probabilities, dtype=float)
-    if p.ndim != 1 or p.shape[0] != s:
-        raise WeightError(f"probabilities must be shape ({s},), got {p.shape}")
+    p = np.asarray(probabilities, dtype=float).reshape(-1)
+    if p.shape[0] != s:
+        raise WeightError(f"probabilities must have {s} entries, got {p.shape[0]}")
     if np.any(p < 0) or abs(p.sum() - 1.0) > 1e-6:
         raise WeightError("probabilities must be non-negative and sum to 1")
-    rng = np.random.default_rng(seed)
-    indices = rng.choice(s, size=n, replace=True, p=p)
-    out = posterior.isel(sample=indices)
-    if "sample" in out.coords:  # drop the stacked MultiIndex (and its levels)
-        out = out.drop_vars(["sample", "chain", "draw"], errors="ignore")
-    out = out.rename({"sample": "draw"})
-    out = out.assign_coords(draw=np.arange(n))
-    extra = [d for d in out.dims if d not in ("chain", "draw")]
-    out = out.expand_dims(chain=[0], axis=0).transpose("chain", "draw", *extra)
-    out.attrs["resampled_indices"] = indices
+    if n % n_chains != 0:
+        raise WeightError(
+            f"num_samples {n} must be a multiple of n_chains {n_chains}"
+        )
+
+    idx = rng.choice(s, size=n, replace=True, p=p)
+    chain_idx = idx // n_draws
+    draw_idx = idx % n_draws
+
+    resampled_vars = {}
+    for var in posterior.data_vars:
+        da = posterior[var]
+        extra_dims = [d for d in da.dims if d not in ("chain", "draw")]
+        indexed = da.values[chain_idx, draw_idx]
+        reshaped = indexed.reshape((n_chains, n // n_chains, *indexed.shape[1:]))
+        coords = {"chain": range(n_chains), "draw": range(n // n_chains)}
+        for d in extra_dims:
+            coords[d] = da.coords[d].values
+        resampled_vars[var] = xr.DataArray(
+            reshaped, dims=["chain", "draw", *extra_dims], coords=coords
+        )
+    out = xr.Dataset(resampled_vars)
+    out.attrs["resampled_indices"] = idx
     return out
 
 
