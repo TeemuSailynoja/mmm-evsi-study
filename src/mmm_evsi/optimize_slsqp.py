@@ -224,6 +224,23 @@ def _solve_job_shared(job: WeightedSolveJob) -> Q2SolveResult:
     return _solve_on_wrapper(_SHARED_WRAPPER, _SHARED_Q2_CFG, job)
 
 
+# Global cache: key = (window_start, window_end)
+# Within a single process, the optimizer is compiled once per window.
+_q2_optimizer_cache: dict = {}
+
+
+def _get_q2_optimizer(mmm, window_start, window_end):
+    """Get or create a cached ``CarryInBudgetOptimizer``."""
+    from mmm_evsi.carry_in_optimizer import CarryInBudgetOptimizer
+    
+    key = (window_start, window_end)
+    if key not in _q2_optimizer_cache:
+        _q2_optimizer_cache[key] = CarryInBudgetOptimizer(
+            mmm, window_start, window_end
+        )
+    return _q2_optimizer_cache[key]
+
+
 def run_weighted_solves(
     mmm,
     df: pd.DataFrame,
@@ -238,12 +255,10 @@ def run_weighted_solves(
     pool whose workers inherit the compiled wrapper copy-on-write (no
     per-worker compile either). Results are in job order and deterministic.
     """
-    from mmm_evsi.carry_in_optimizer import CarryInBudgetOptimizer
-
     if n_processes is None:
         n_processes = os.cpu_count() or 1
     jobs = list(jobs)
-    wrapper = CarryInBudgetOptimizer(mmm, q2_cfg.window[0], q2_cfg.window[1])
+    wrapper = _get_q2_optimizer(mmm, q2_cfg.window[0], q2_cfg.window[1])
     if n_processes == 1 or len(jobs) <= 1:
         return [_solve_on_wrapper(wrapper, q2_cfg, j) for j in jobs]
 

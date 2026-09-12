@@ -34,13 +34,37 @@ class WeightError(ValueError):
 # Pure pooling / weighting
 # ---------------------------------------------------------------------------
 
+# Cache the pooled posterior after the first call.  Since the posterior never
+# changes during the BO/importance loop, this eliminates the zarr I/O that
+# would otherwise occur on every call (10 outcomes × 6 dimensions × ~5 s).
+_pooled_posterior_cache: xr.Dataset | None = None
+
+# Cache the unpooled (chain, draw) posterior after the first
+# ``unpool_posterior()`` call.  Each ``resample_posterior()`` invocation
+# calls ``unpool_posterior()`` which iterates over data_vars and calls
+# ``.values`` on zarr-backed arrays.  Since the posterior never changes
+# during the BO/importance loop, we can safely cache the result.
+_unpooled_posterior_cache: xr.Dataset | None = None
+
 
 def pool_posterior(posterior: xr.Dataset | xr.DataTree) -> xr.Dataset:
     """Stack (chain, draw) -> (sample,) (chain-major). Accepts a Dataset or
     a DataTree posterior node (``idata["posterior"]``). The stacked
     MultiIndex is dropped so ``sample`` is a PLAIN positional dim, and the
     original chain/draw counts are stashed in attrs so ``resample_posterior``
-    can reconstruct the (chain, draw) layout."""
+    can reconstruct the (chain, draw) layout.
+
+    The result is cached after the first call since the posterior never
+    changes during the BO loop.
+    """
+    global _pooled_posterior_cache
+    if _pooled_posterior_cache is None:
+        _pooled_posterior_cache = _pool_posterior_impl(posterior)
+    return _pooled_posterior_cache
+
+
+def _pool_posterior_impl(posterior: xr.Dataset | xr.DataTree) -> xr.Dataset:
+    """Implementation of pool_posterior without caching."""
     if isinstance(posterior, xr.DataTree):
         posterior = posterior.to_dataset()
     if "sample" in posterior.dims:
@@ -147,7 +171,19 @@ def apply_khat_policy(
 def unpool_posterior(pooled: xr.Dataset) -> xr.Dataset:
     """Reconstruct the (chain, draw) layout from a ``pool_posterior``
     output (its attrs carry the original chain/draw counts). The flat
-    sample axis is chain-major."""
+    sample axis is chain-major.
+
+    The result is cached after the first call since the posterior never
+    changes during the BO loop.
+    """
+    global _unpooled_posterior_cache
+    if _unpooled_posterior_cache is None:
+        _unpooled_posterior_cache = _unpool_posterior_impl(pooled)
+    return _unpooled_posterior_cache
+
+
+def _unpool_posterior_impl(pooled: xr.Dataset) -> xr.Dataset:
+    """Implementation of unpool_posterior without caching."""
     n_chains = pooled.attrs.get("pooled_n_chains")
     n_draws = pooled.attrs.get("pooled_n_draws")
     if not n_chains:

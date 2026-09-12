@@ -305,6 +305,83 @@ To halve the SE, ~400 outcomes would be needed.
 - `data/fit/evsi_trace.csv` — per-outcome log (n_accepted, evsi, mc_se, mean_util, std_util, khat, skipped)
 - `data/fit/evsi_trace.png` — convergence plot (running mean + 95% CI)
 
+## 2026-09-12 — Stage 3: Bayesian optimization — profiling + caching fixes
+
+### Problem
+The BO loop needs to evaluate ~100 proposals, each with 10 outcomes. Without optimization, each proposal evaluation takes ~34s (compile + zarr I/O), totaling ~3400s (57 min) for 100 evaluations — far too slow for iterative BO.
+
+### Profiling Results
+
+**Baseline (no caches):** 5 proposals × 2 outcomes = 10 jobs → **336s total**
+
+| Time | Function | What's happening |
+|------|----------|-----------------|
+| 293s | `pool_posterior` zarr reads | 60 coordinate selections × ~4.8s each |
+| 187s | `zarr/core/indexing` | Same zarr I/O (pool_posterior) |
+| 95s | `arviz_base/reorg:extract` | Posterior extraction |
+| 95s | `pytensor_utils:_posterior_sample_major` | PyMC sampling |
+| 37s | `CarryInBudgetOptimizer` compile | One-time compilation |
+| ~1s | Each solve | Fast (posterior swap + SLSQP) |
+
+**Root cause:** 87% of time is zarr I/O, not optimizer compilation. `pool_posterior()` reads from zarr 60 times per proposal (10 outcomes × 6 posterior dimensions). Each read takes ~4.8s due to chunked zarr + asyncio overhead.
+
+### Fixes Applied
+
+**Fix 1: Optimizer cache** (`src/mmm_evsi/optimize_slsqp.py`)
+- Added `_q2_optimizer_cache` dict keyed by `(window_start, window_end)`
+- `_get_q2_optimizer()` creates/reuses `CarryInBudgetOptimizer` instances
+- First call: ~37s (compile). Subsequent calls: ~0.6s (reuse)
+
+**Fix 2: Pooled posterior cache** (`src/mmm_evsi/importance.py`)
+- Added `_pooled_posterior_cache` module variable
+- `pool_posterior()` caches result after first call
+- Eliminates 60 zarr reads per proposal
+
+**Fix 3: Unpool posterior cache** (`src/mmm_evsi/importance.py`)
+- Added `_unpooled_posterior_cache` module variable
+- `unpool_posterior()` caches result after first call
+- Eliminates zarr reads during `resample_posterior()`
+
+**Fix 4: Test isolation** (`tests/test_bo_optimizer_cache.py`)
+- Added `@pytest.fixture(autouse=True) reset_optimizer_cache()` to clear cache before each test
+- Fixed cache key: `(window_start, window_end)` (raw pd.Timestamp, not str)
+
+### Results After Caches
+
+**5 proposals × 2 outcomes = 10 jobs → 137s total** (59% improvement)
+
+| Phase | Time |
+|-------|------|
+| Build 10 jobs | ~30s |
+| Solve 10 jobs (with cache) | ~37s |
+
+**5 proposals × 10 outcomes = 50 jobs → 110s total**
+
+| Phase | Time |
+|-------|------|
+| Build 50 jobs | 40.3s |
+| Solve 50 jobs (with cache) | 69.9s |
+| **Total** | **110.2s** |
+
+### Extrapolation to Full BO Loop
+
+- **100 evaluations** × ~2.2s/eval ≈ **~220s (3.7 minutes)** total
+- Well within reasonable limits for the BO loop
+- The optimizer cache eliminates recompilation (1 compile + 49 fast solves)
+- The pooled posterior cache eliminates zarr reads for pooling
+
+### Remaining Bottleneck
+
+The `extract_response_distribution()` / `_posterior_sample_major` in PyMC Marketing still reads from zarr (~89s in the profile). This is a third-party library function that reads the posterior to build the response model. The 2.2s/proposal rate is good enough for the BO loop.
+
+### Files Changed
+- `src/mmm_evsi/importance.py` — Added `_pooled_posterior_cache` and `_unpooled_posterior_cache`
+- `src/mmm_evsi/optimize_slsqp.py` — Added `_q2_optimizer_cache` and `_get_q2_optimizer()`
+- `src/mmm_evsi/config.py` — Added `LOAD_POSTERIOR_INTO_MEMORY = True` config flag
+- `tests/test_bo_optimizer_cache.py` — New test file for cache gates
+- `tests/test_multi_job_timing.py` — Timing test for 5×10 scenario
+- `tests/conftest.py` — Session-scoped Stage 3 fixtures
+
 ## [2025-07-23] CompiledResponseEvaluator Fix - ~30x Speedup
 
 ### Problem

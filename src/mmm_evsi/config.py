@@ -61,9 +61,8 @@ FIXED_CHANNELS: list[str] = []
 BOX_PCT = 0.30  # per channel/quarter: [1-BOX_PCT, 1+BOX_PCT] * planned spend
 LAMBDA = 1.0  # $1 Q1 revenue loss <=> $1 expected Q2 gain
 # Experimentation budget: cap on the lambda-weighted Q1 revenue loss.
-# Placeholder until V_Q1(baseline) is known (Stage 1/4); expressed as a
-# fraction of the planned quarterly budget for now.
-E_MAX_FRACTION = 0.05
+# Expressed as a fraction of the planned quarterly budget.
+E_MAX_FRACTION = 0.10  # 10% of total quarterly budget
 
 # ---------------------------------------------------------------------------
 # Fitting (case study settings, 2x draws)
@@ -81,6 +80,7 @@ NUTS_SAMPLER = "nutpie"  # CPU: fastest for an MMM of this size (7 channels,
 # Stage 2 — importance sampling parameters (additive; see
 # docs/contracts/stage2-weighted.md)
 # ---------------------------------------------------------------------------
+LOAD_POSTERIOR_INTO_MEMORY = True  # if True, load posterior into memory at startup; avoids zarr I/O bottleneck
 K_HAT_THRESHOLD = 0.7  # k-hat > threshold => skip the simulated quarter (G2.3)
 N_SIM_OUTCOMES = 5  # default simulated quarters per allocation (G2.9 smoke);
                     # gates/sweeps pass larger values explicitly
@@ -89,6 +89,16 @@ MIN_POOLED_DRAWS = 25  # psislw tail-fit floor (n_draws_tail >= 5); asserted
 RESAMPLE_DRAWS = 2_000  # resample size for the Q2 solve (the 32k original
                         # posterior is for IS coverage; 2k is enough for the
                         # weighted optimization)
+
+# ---------------------------------------------------------------------------
+# Stage 3 — Bayesian optimization parameters
+# ---------------------------------------------------------------------------
+BO_N_EVALUATIONS = 100  # total function evaluations (LHS + BO iterations)
+BO_N_INITIAL = 20  # LHS initial design size
+BO_N_OUTCOMES = 10  # simulated outcomes per proposal evaluation
+BO_TOL = 1e-4  # relative improvement threshold for early stopping
+BO_PATIENCE = 10  # consecutive non-improvements to trigger early stop
+BO_N_DRAW_VQ1 = 100  # posterior draws for fast V_Q1 computation in BO loop
 
 
 @dataclass(frozen=True)

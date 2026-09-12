@@ -8,6 +8,85 @@ import pytest
 from pymc_marketing.mmm import MMM, GeometricAdstock, LogisticSaturation
 
 
+# ---------------------------------------------------------------------------
+# Stage 3 — BO fixtures (artifact-gated)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def mmm():
+    """Fitted case-study MMM loaded from zarr (session-scoped).
+
+    Skips the entire test session if the model artifact is missing.
+    """
+    try:
+        from mmm_evsi.load_mmm import load_mmm, SanityCheckError
+
+        mmm, _ = load_mmm()
+    except FileNotFoundError:
+        pytest.skip(
+            "Stage 1 artifacts missing — run scripts/fit_case_study.py first"
+        )
+    except SanityCheckError as exc:
+        pytest.skip(f"Stage 1 artifact sanity check failed: {exc}")
+    return mmm
+
+
+@pytest.fixture(scope="session")
+def idata(mmm):
+    """Posterior idata from the fitted MMM (``mmm.idata``)."""
+    return mmm.idata
+
+
+@pytest.fixture(scope="session")
+def df():
+    """Raw case-study DataFrame (weekly spend + target)."""
+    from mmm_evsi.load_mmm import load_case_study_data
+
+    return load_case_study_data()
+
+
+@pytest.fixture(scope="session")
+def budgets(df):
+    """Q1/Q2 budget plan derived from the raw data."""
+    from mmm_evsi.load_mmm import load_budgets
+
+    return load_budgets(df)
+
+
+@pytest.fixture(scope="session")
+def q1_cfg(budgets):
+    """Q1 budget config (window, planned, total, boxes)."""
+    return budgets.q1
+
+
+@pytest.fixture(scope="session")
+def q2_cfg(budgets):
+    """Q2 budget config (window, planned, total, boxes)."""
+    return budgets.q2
+
+
+@pytest.fixture(scope="session")
+def baseline_allocation(mmm, q1_cfg):
+    """Baseline Q1 allocation from ``solve_baseline`` (7,)."""
+    from mmm_evsi.baseline import solve_baseline
+    from mmm_evsi import config
+
+    result = solve_baseline(mmm, config.Q1_WINDOW, q1_cfg)
+    return result.budgets
+
+
+@pytest.fixture(scope="session")
+def V_Q1_baseline(mmm, idata, df, baseline_allocation, q1_cfg):
+    """Expected Q1 sales under baseline (n_draws=100, fast)."""
+    from mmm_evsi.bo_design import compute_v_q1
+
+    return compute_v_q1(
+        mmm, idata["posterior"].to_dataset(), df,
+        baseline_allocation, q1_cfg, n_draws=100,
+    )
+
+
 @pytest.fixture(scope="session")
 def toy_mmm():
     """A fitted 7-channel weekly toy MMM for the Stage 0 capability probe.
