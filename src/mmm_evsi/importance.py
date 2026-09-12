@@ -391,7 +391,20 @@ def evaluate_allocation(
             _process(y_star, i, seed + i)
 
     results = run_weighted_solves(mmm, df, jobs, q2_cfg, n_processes=n_processes)
-    utilities = np.array([r.objective_value for r in results], dtype=float)
+    # Utilities are recorded in CORRECT sales units via the validated response
+    # path (the stock optimizer's -scipy_result.fun is ~6.2-6.4x inflated by an
+    # optimization-model un-scaling quirk; see docs/LOG.md). Deterministic.
+    from mmm_evsi.optimize_slsqp import q2_expected_response
+
+    utilities = np.array(
+        [
+            q2_expected_response(
+                mmm, job.posterior, df, job.q1_weekly_spend, r.budgets
+            )
+            for job, r in zip(jobs, results)
+        ],
+        dtype=float,
+    )
     if utilities.size == 0:
         raise WeightError("all simulated quarters skipped by the k-hat policy")
 

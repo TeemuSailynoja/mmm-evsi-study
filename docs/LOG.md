@@ -210,3 +210,22 @@ This is the "no drift" reference: every material decision gets an entry.
   `create_zero_dataset`, or the "original scale" un-scaling factor.
   All utilities WITHIN one path are consistent (stock units everywhere), so
   this does not block Stage 3.
+
+## 2026-09-12 — scale adjudication: PP-based, definitive
+
+- **[RESOLVED]** Adjudicated with the model's own posterior predictive (user
+  direction). At the stock optimizer's solved Q2 allocation: observed Q2 sales
+  1.159e9; PP total sales 1.23e9; my response 1.33e9 total / 0.85e9 media;
+  fit-model `total_media_contribution_original_scale` at that allocation
+  0.852e9 (== my media, exact); **stock objective 5.28e9** — ~6.2× inflated.
+  The OPTIMIZATION model's "original scale" un-scaling differs from the fit
+  model's (data-derived transform + zero-target optimization data).
+- **[DECIDED]** Uniformity check: stock/my ratio 6.19 at the stock optimum vs
+  6.43/6.42 at planned/jittered — near-constant (~4% variation). The stock's
+  argmax is therefore ~unbiased; the reported -scipy_result.fun must NOT be
+  used as a sales utility. Utilities are now computed in correct units via
+  `q2_expected_response` at the solved budgets (evaluate_allocation).
+- **[GATE]** Constraints re-verified at the stock solution: Σx = B to
+  machine precision, zero box violations. Allocations: my implementation IS
+  the stock machinery (+ shared carry-in); G-CI-2 proves identical
+  allocations (rtol 1e-4).
