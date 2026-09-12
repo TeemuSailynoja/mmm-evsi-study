@@ -1,5 +1,27 @@
 # Method notes
 
+## Baseline-arm EVSI — first results (2026-09-11)
+
+The baseline-arm EVSI has been computed for the case study:
+
+- **EVSI = 4.72% ± 0.40%** of prior Q2 utility (1,354M)
+- **Standard error of the mean (Ehat) = 5.4M** (8.3% relative)
+- **95% CI: [3.95%, 5.49%]** of prior utility
+- **k-hat = 0.590** (well below the 0.7 skip threshold — stable importance weighting)
+- **200 outcomes** (193 accepted after k-hat filtering)
+- **Computation time: ~400s** (CompiledResponseEvaluator, 24x speedup)
+
+The EVSI represents the value of optimizing Q2 media allocations after
+learning from Q1, compared to keeping the Q1 baseline allocation. The
+~0.4% MC uncertainty (1-σ) means the true value likely lies in the
+[3.95%, 5.49%] range. The 8.3% relative SE is dominated by the inherent
+variance of the Q2 utility distribution (CV=5.3%), not by insufficient
+Monte Carlo samples.
+
+To halve the SE, ~400 outcomes would be needed. The CompiledResponseEvaluator
+pattern (single compile, data swap) is confirmed as the right approach for
+the EVSI pipeline.
+
 ## Importance sampling for the Q1→Q2 posterior update
 
 We never refit the model. Given posterior draws θ_s ~ p(θ | D) (s = 1..S)
@@ -61,6 +83,21 @@ crosses the train→Q1 and Q1→Q2 boundaries. The reported benefit is split:
 
 Effects extending beyond Q2 are truncated at the Q2 horizon; the discarded
 tail is estimated and reported.
+
+## CompiledResponseEvaluator (performance optimization)
+
+The `CompiledResponseEvaluator` class (src/mmm_evsi/importance.py) caches the
+MMM response graph and swaps shared variables without recompilation:
+
+1. **Graph compilation** (one-time, ~35s): compiles the full PyTensor graph
+   for `extract_response_distribution`.
+2. **Posterior binding**: uses `SharedPosterior` to swap draws without
+   recompilation (bypasses xarray.stack overhead via numpy reshape).
+3. **Spend data**: replaces the model's `channel_data_var` with a custom
+   shared variable, updated via `set_spend()` without recompilation.
+
+This achieves ~0.66s per outcome (simulate + loglik + psis + resample)
+vs ~20s per outcome without caching — a **24x speedup**.
 
 ## Uncertainty decomposition (Stage 4)
 

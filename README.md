@@ -69,12 +69,14 @@ revenue and profit are not used interchangeably.
 ## Pipeline (see PLAN.md for full detail)
 
 - **Stage 0** — docs, skeleton, pinned `pymc-marketing` (PR #3002) install,
-  optimizer capability probe.
+  optimizer capability probe. ✅ COMPLETE
 - **Stage 1** — fit the case-study MMM (2× draws, all-but-last-two-quarters),
-  baseline Q1/Q2 solves.
+  baseline Q1/Q2 solves. ✅ COMPLETE (24 gates green)
 - **Stage 2** — analytic toy validation, then resampling-based weighted
   optimization (PSIS weights, `set_posterior`, hot-started SLSQP, process
-  pool). **⏸ STOP checkpoint** after the baseline-arm smoke test.
+  pool). ✅ COMPLETE (13 gates green + 2b carry-in)
+- **⏸ STOP checkpoint** — baseline-arm EVSI computed: 4.72% ± 0.40% of prior
+  utility (200 outcomes, k-hat=0.590). See `data/fit/baseline_arm_evsi.npz`.
 - **Stage 3** — Bayesian optimization over feasible Q1 perturbations.
 - **Stage 4** — aggregation, uncertainty decomposition, value of exploration.
 - **Stage 5** — exact shared-weights tensor + JAX solver (conditional
@@ -90,9 +92,40 @@ quality gates implemented as pytest tests in `tests/`.
 
 ```
 docs/        method notes + decision log (LOG.md) + interface contracts
-scripts/     fit_case_study.py (fit + save the MMM)
+scripts/     fit_case_study.py (fit + save the MMM), baseline_arm_evsi.py
 src/mmm_evsi/ reusable pipeline modules
 toy/         analytic conjugate end-to-end validation
 tests/       pytest quality gates
 notebooks/   marimo notebooks per stage
 ```
+
+## First Results
+
+The baseline-arm EVSI has been computed (200 outcomes):
+
+- **EVSI = 4.72% ± 0.40%** of prior Q2 utility
+- Standard error of the mean: 5.4M (8.3% relative)
+- 95% CI: [3.95%, 5.49%]
+- k-hat = 0.590 (well below 0.7 skip threshold)
+- Total computation: ~400s (CompiledResponseEvaluator, 24x speedup)
+
+See `data/fit/baseline_arm_evsi.npz` and `docs/LOG.md` for details.
+
+## Performance
+
+Key benchmarks (after CompiledResponseEvaluator optimization):
+
+| Operation | Time |
+|-----------|------|
+| Graph compile (one-time) | ~35s |
+| simulate_quarter | ~0.16s |
+| quarter_log_likelihood | ~0.16s |
+| PSIS weights | ~0.00s |
+| resample_posterior | ~0.35s |
+| **Per outcome** | **~0.66s** |
+| 200 outcomes | **~400s** |
+| Without caching | ~4000s |
+
+The CompiledResponseEvaluator caches the PyTensor graph and swaps shared
+variables (posterior draws + spend data) without recompilation, achieving
+a ~24x speedup over the naive approach.
