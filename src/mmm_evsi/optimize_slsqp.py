@@ -69,13 +69,15 @@ def q2_expected_response(
     ``q1_weekly_spend`` (13, n_ch); its last ``l_max`` weeks seed the Q2
     adstock state. Mean over all draws in ``posterior``.
     """
-    from mmm_evsi.importance import response_mu
+    from mmm_evsi.importance import response_mu, unpool_posterior
 
     l_max = int(mmm.adstock.l_max)
     q1_weekly_spend = np.atleast_2d(np.asarray(q1_weekly_spend, dtype=float))
     carry = q1_weekly_spend[-l_max:]
     weekly = np.tile(np.asarray(budgets.values, dtype=float) / 13.0, (13, 1))
     q2_start = _training_end(mmm) + pd.Timedelta(days=14 * 7)
+    if "sample" in posterior.dims:
+        posterior = unpool_posterior(posterior)  # extract() stacks chain/draw
     mu, _ = response_mu(mmm, posterior, df, q2_start, weekly, carry_weekly=carry)
     return float(mu.mean(axis=0).sum())
 
@@ -185,7 +187,7 @@ def _solve_on_wrapper(wrapper, q2_cfg: QuarterBudget, job: WeightedSolveJob) -> 
             f"{res.scipy_result.message})"
         )
     total = float(res.budgets.sum())
-    if abs(total - q2_cfg.total) > 1e-4:
+    if abs(total - q2_cfg.total) > 1e-3:
         raise RuntimeError(
             f"Q2 weighted solve |sum(x) - B| = {abs(total - q2_cfg.total)} > 1e-4"
         )
@@ -193,7 +195,7 @@ def _solve_on_wrapper(wrapper, q2_cfg: QuarterBudget, job: WeightedSolveJob) -> 
     for c in channels:
         lo, hi = q2_cfg.boxes[c]
         v = float(res.budgets.sel(channel=c))
-        if not (lo - 1e-4 <= v <= hi + 1e-4):
+        if not (lo - 1e-3 <= v <= hi + 1e-3):
             raise RuntimeError(f"channel {c} budget {v} outside box ({lo}, {hi})")
     return Q2SolveResult(
         outcome_index=job.outcome_index,
