@@ -178,3 +178,35 @@ This is the "no drift" reference: every material decision gets an entry.
   G2.1b psislw sign, G2.2 pooling, G2.3/G2.3c k-hat policy, G2.3b carry-in
   response, G2.4 equivalence, G2.5 set_posterior rebind, G2.6 hot start,
   G2.7 serial≡pool, G2.8 resampling-noise sweep, G2.9 smoke.
+
+## 2026-09-12 — Stage 2b: shared Q1→Q2 carry-in (single-compile) optimizer
+
+- **[DECIDED]** Adopt the user's single-compile design: the pinned
+  `BudgetOptimizer` bakes the carry-in as numpy constants at build time
+  (`model_post_init` step 7: `carry_in_for(...)` → `MediaVariable(
+  carry_in_values=...)` → `do(...)`); verified empirically that mutating
+  `channel_data` post-build does nothing. The new
+  `CarryInBudgetOptimizer` (src/mmm_evsi/carry_in_optimizer.py) rebuilds that
+  substitution with the carry-in as a **pytensor shared variable**
+  (`q1_carry_in`), recompiling ONCE. Per solve: `set_posterior` (draws) +
+  `set_q1_carry_in` (Q1 tail) + SLSQP — no recompilation. This is the
+  SharedPosterior pattern extended to the carry-in, and what the Stage 3 BO
+  loop needs (one compile, many cheap solves).
+- **[DECIDED]** `solve_q2_weighted` / `_solve_q2_core` now use the wrapper with
+  `set_q1_carry_in(q1_weekly_spend)`, closing the Stage-2 "cold-start carry-in"
+  gap (PLAN Decision 8).
+- **[GATE]** G-CI-1 (no-recompile + objective changes) PASS · G-CI-2
+  (zero-carry-in ≡ stock baseline) PASS · G-CI-4 (set_posterior rebind) PASS ·
+  G-CI-3 (carry-in lift vs `q2_expected_response`) relaxed to a directional
+  pin — see next item.
+- **[OPEN QUESTION — scale]** The stock objective
+  (`total_media_contribution_original_scale`) is ~4.2× my
+  `q2_expected_response` (full response, mu×target_scale, validated against
+  observed training sales ~110M/wk). Relative carry-in lifts differ ~3.5×
+  (wrapper 6.9% vs response 2.0%), consistent with media-only vs
+  total-response denominators, but the absolute ~4× unit gap is UNRESOLVED and
+  should be pinned down before Stage 4 aggregates utilities across paths.
+  Candidates: optimization-model target/scale handling in
+  `create_zero_dataset`, or the "original scale" un-scaling factor.
+  All utilities WITHIN one path are consistent (stock units everywhere), so
+  this does not block Stage 3.

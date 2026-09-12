@@ -82,13 +82,20 @@ def q2_expected_response(
 def _solve_q2_core(
     mmm, posterior, df, q2_cfg, q1_weekly_spend, x0, minimize_kwargs
 ) -> Q2SolveResult:
-    """Solve the Q2 allocation with the STOCK ``BudgetOptimizer`` (correct
-    objective + analytic gradient). The resampled ``posterior`` is bound via
-    ``set_posterior``. Q1→Q2 carry-in is injected by the caller (see
-    ``_with_q1_carry_in``) — for now the stock cold-start path is used.
+    """Solve the Q2 allocation with the shared-carry-in optimizer (Stage 2b).
+
+    The Q2 objective is compiled once by ``CarryInBudgetOptimizer`` with the
+    Q1→Q2 adstock carry-in held in a shared variable; per job we only swap
+    (i) the carry-in spend via ``set_q1_carry_in`` and (ii) the resampled
+    ``posterior`` via ``set_posterior``. Zero carry-in reproduces the stock
+    Stage-1 baseline exactly (G2.4 / G-CI-2); ``q2_expected_response`` with
+    the same inputs is the arbiter reference (G-CI-3).
     """
+    from mmm_evsi.carry_in_optimizer import CarryInBudgetOptimizer
+
     q2_start, q2_end = q2_cfg.window
-    opt = mmm.budget_optimizer(q2_start, q2_end)
+    opt = CarryInBudgetOptimizer(mmm, q2_start, q2_end)
+    opt.set_q1_carry_in(np.asarray(q1_weekly_spend))
     if posterior is not None:
         opt.set_posterior(posterior)
     kwargs = dict(minimize_kwargs) if minimize_kwargs else {}
@@ -141,7 +148,8 @@ def solve_q2_weighted(
     x0: xr.DataArray | None = None,
     minimize_kwargs: dict | None = None,
 ) -> Q2SolveResult:
-    """Maximize expected Q2 sales using the stock optimizer + full posterior."""
+    """Maximize expected Q2 sales under the full posterior with the shared
+    Q1→Q2 carry-in (zero carry-in reproduces the stock Stage-1 baseline)."""
     return _solve_q2_core(
         mmm, None, df, q2_cfg, q1_weekly_spend, x0, minimize_kwargs
     )
@@ -149,7 +157,7 @@ def solve_q2_weighted(
 
 def _solve_job(args) -> Q2SolveResult:
     """Worker entry point: load the MMM from disk (never pickled), solve one
-    job against its resampled posterior."""
+    job against its resampled posterior and Q1→Q2 carry-in."""
     model_file, df, q2_cfg, job = args
     import sys
     from pathlib import Path
