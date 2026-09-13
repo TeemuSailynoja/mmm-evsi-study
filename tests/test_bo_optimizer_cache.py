@@ -46,16 +46,18 @@ def test_g36_first_call_compiles(
         baseline_allocation, q1_cfg, rng,
         E_max, V_Q1_baseline, n_iter=10,
     )
-    q1_weekly = allocation_to_weekly_spend(alloc, 13)
+    q1_weekly = allocation_to_weekly_spend(alloc, q1_cfg.weekly_spend, q1_cfg.planned, 13)
 
     # Simulate one outcome
     y_star = simulate_quarter(
-        mmm, idata, df, q1_cfg.window, alloc, seed=42
+        mmm, idata, df, q1_cfg.window, alloc, q1_cfg, seed=42
     )
 
     # Compute log-likelihood and weights
     ell = quarter_log_likelihood(
-        mmm, idata, df, q1_cfg.window, alloc, y_star
+        mmm, idata, df, q1_cfg.window, alloc, y_star,
+        baseline_weekly_spend=q1_cfg.weekly_spend,
+        baseline_quarterly=q1_cfg.planned,
     )
     psis = psis_weights(ell)
     verdict = apply_khat_policy(psis)
@@ -122,16 +124,18 @@ def test_g36_second_call_reuses(
         baseline_allocation, q1_cfg, rng,
         E_max, V_Q1_baseline, n_iter=10,
     )
-    q1_weekly = allocation_to_weekly_spend(alloc, 13)
+    q1_weekly = allocation_to_weekly_spend(alloc, q1_cfg.weekly_spend, q1_cfg.planned, 13)
 
     # Simulate one outcome
     y_star = simulate_quarter(
-        mmm, idata, df, q1_cfg.window, alloc, seed=42
+        mmm, idata, df, q1_cfg.window, alloc, q1_cfg, seed=42
     )
 
     # Compute log-likelihood and weights
     ell = quarter_log_likelihood(
-        mmm, idata, df, q1_cfg.window, alloc, y_star
+        mmm, idata, df, q1_cfg.window, alloc, y_star,
+        baseline_weekly_spend=q1_cfg.weekly_spend,
+        baseline_quarterly=q1_cfg.planned,
     )
     psis = psis_weights(ell)
     verdict = apply_khat_policy(psis)
@@ -210,16 +214,18 @@ def test_g36_multiple_jobs(
         baseline_allocation, q1_cfg, rng,
         E_max, V_Q1_baseline, n_iter=10,
     )
-    q1_weekly = allocation_to_weekly_spend(alloc, 13)
+    q1_weekly = allocation_to_weekly_spend(alloc, q1_cfg.weekly_spend, q1_cfg.planned, 13)
 
     # Simulate one outcome
     y_star = simulate_quarter(
-        mmm, idata, df, q1_cfg.window, alloc, seed=42
+        mmm, idata, df, q1_cfg.window, alloc, q1_cfg, seed=42
     )
 
     # Compute log-likelihood and weights
     ell = quarter_log_likelihood(
-        mmm, idata, df, q1_cfg.window, alloc, y_star
+        mmm, idata, df, q1_cfg.window, alloc, y_star,
+        baseline_weekly_spend=q1_cfg.weekly_spend,
+        baseline_quarterly=q1_cfg.planned,
     )
     psis = psis_weights(ell)
     verdict = apply_khat_policy(psis)

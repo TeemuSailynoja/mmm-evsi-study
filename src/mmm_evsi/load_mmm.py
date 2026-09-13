@@ -14,6 +14,7 @@ from mmm_evsi.budgets import (
     QuarterBudget,
     budget_boxes,
     planned_budget_per_channel,
+    planned_weekly_spend,
 )
 
 
@@ -119,11 +120,13 @@ def _quarter_budget(df: pd.DataFrame, window: tuple[str, str]) -> QuarterBudget:
     planned = planned_budget_per_channel(df, window)
     total = float(sum(planned.values()))
     boxes = budget_boxes(planned)
+    weekly_spend = planned_weekly_spend(df, window)
     # Pinned QuarterBudget invariant (contract §2.2).
     assert planned.keys() == set(config.CHANNEL_COLUMNS), planned.keys()
     assert total == sum(planned.values()), (total, sum(planned.values()))
     assert boxes == budget_boxes(planned), boxes
-    return QuarterBudget(window=window, planned=planned, total=total, boxes=boxes)
+    assert weekly_spend.shape == (13, len(config.CHANNEL_COLUMNS)), weekly_spend.shape
+    return QuarterBudget(window=window, planned=planned, total=total, boxes=boxes, weekly_spend=weekly_spend)
 
 
 def load_budgets(df: pd.DataFrame | None = None) -> BudgetPlan:

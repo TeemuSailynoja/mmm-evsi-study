@@ -121,19 +121,27 @@ def q2_expected_response(
     df: pd.DataFrame,
     q1_weekly_spend: np.ndarray,
     budgets: xr.DataArray,
+    q2_cfg: QuarterBudget,
 ) -> float:
     """Expected Q2 sales (13 weeks) with Q1→Q2 adstock carry-in.
 
     Q2 window = 13 weeks after training end + 14-week offset (Q1 quarter).
     ``q1_weekly_spend`` (13, n_ch); its last ``l_max`` weeks seed the Q2
     adstock state. Mean over all draws in ``posterior``.
+
+    Q2 weekly spend preserves the flighting pattern from ``q2_cfg.weekly_spend``:
+    ``weekly[:, j] = baseline[:, j] * (budgets[j] / q2_cfg.planned[j])``.
     """
     from mmm_evsi.importance import response_mu, unpool_posterior
 
     l_max = int(mmm.adstock.l_max)
     q1_weekly_spend = np.atleast_2d(np.asarray(q1_weekly_spend, dtype=float))
     carry = q1_weekly_spend[-l_max:]
-    weekly = np.tile(np.asarray(budgets.values, dtype=float) / 13.0, (13, 1))
+    budgets_vals = np.asarray(budgets.values, dtype=float)
+    q2_baseline = np.asarray(q2_cfg.weekly_spend, dtype=float)
+    channels = list(budgets.coords["channel"].values)
+    scales = budgets_vals / np.array([q2_cfg.planned[c] for c in channels])
+    weekly = q2_baseline * scales[np.newaxis, :]
     q2_start = _training_end(mmm) + pd.Timedelta(days=14 * 7)
     if "sample" in posterior.dims:
         posterior = unpool_posterior(posterior)  # extract() stacks chain/draw

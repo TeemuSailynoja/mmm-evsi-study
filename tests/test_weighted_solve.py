@@ -99,10 +99,12 @@ def test_g25_set_posterior_rebind_changes_objective_keeps_identity():
 
     # A real weight set: one simulated quarter's PSIS smoothed weights.
     y_star = experiments.simulate_quarter(
-        mmm, idata, df, q1_cfg.window, allocation, seed=0
+        mmm, idata, df, q1_cfg.window, allocation, q1_cfg, seed=0
     )
     ell = importance.quarter_log_likelihood(
-        mmm, idata, df, q1_cfg.window, allocation, y_star
+        mmm, idata, df, q1_cfg.window, allocation, y_star,
+        baseline_weekly_spend=q1_cfg.weekly_spend,
+        baseline_quarterly=q1_cfg.planned,
     )
     psis = importance.psis_weights(ell)
     pooled = importance.pool_posterior(idata["posterior"])

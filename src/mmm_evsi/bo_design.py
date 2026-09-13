@@ -276,7 +276,9 @@ def compute_v_q1(
     from mmm_evsi.experiments import allocation_to_weekly_spend
     from mmm_evsi.importance import response_mu, unpool_posterior
 
-    weekly = allocation_to_weekly_spend(allocation, 13)
+    weekly = allocation_to_weekly_spend(
+        allocation, q1_cfg.weekly_spend, q1_cfg.planned, 13
+    )
     weekly = np.asarray(weekly, dtype=float)  # (13, 7)
     q1_start = q1_cfg.window[0]
 

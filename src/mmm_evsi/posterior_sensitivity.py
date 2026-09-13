@@ -328,10 +328,12 @@ def _compute_reweighted_posterior(
         from mmm_evsi.experiments import simulate_quarter
 
         y_star = simulate_quarter(
-            mmm, idata, df, q1_cfg.window, allocation, seed=seed + i
+            mmm, idata, df, q1_cfg.window, allocation, q1_cfg, seed=seed + i
         )
         ell = importance.quarter_log_likelihood(
-            mmm, idata, df, q1_cfg.window, allocation, y_star
+            mmm, idata, df, q1_cfg.window, allocation, y_star,
+            baseline_weekly_spend=q1_cfg.weekly_spend,
+            baseline_quarterly=q1_cfg.planned,
         )
         psis = psis_weights(ell)
         verdict = importance.apply_khat_policy(psis)
@@ -407,7 +409,7 @@ def _run_q2_optimization(
     )
     results = run_weighted_solves(mmm, df, [job], q2_cfg, n_processes=1)
     q2_value = q2_expected_response(
-        mmm, reweighted_posterior, df, q1_weekly_spend, results[0].budgets
+        mmm, reweighted_posterior, df, q1_weekly_spend, results[0].budgets, q2_cfg
     )
     return q2_value, results[0].allocation
 
@@ -516,7 +518,9 @@ def run_sensitivity_configuration(
     # 8. Q2 optimization (optional, expensive)
     q2_shift = None
     if include_q2:
-        q1_weekly = allocation_to_weekly_spend(scaled_allocation, 13)
+        q1_weekly = allocation_to_weekly_spend(
+            scaled_allocation, q1_cfg.weekly_spend, q1_cfg.planned, 13
+        )
         # Q2 baseline allocation (from q2_cfg.planned, not q1_cfg)
         q2_baseline_allocation = xr.DataArray(
             list(q2_cfg.planned.values()),
@@ -528,7 +532,7 @@ def run_sensitivity_configuration(
                 mmm, df, reweighted, q1_weekly, q2_cfg, x0=q2_baseline_allocation
             )
             baseline_q2_value = q2_expected_response(
-                mmm, original_pooled, df, q1_weekly, q2_baseline_allocation
+                mmm, original_pooled, df, q1_weekly, q2_baseline_allocation, q2_cfg
             )
             q2_shift = Q2Shift(
                 channel=channel,

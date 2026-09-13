@@ -9,15 +9,32 @@ from mmm_evsi import config
 
 
 def allocation_to_weekly_spend(
-    allocation: xr.DataArray, n_weeks: int = 13
+    allocation: xr.DataArray,
+    baseline_weekly_spend: np.ndarray,  # (n_weeks, n_channels)
+    baseline_quarterly: dict[str, float],
+    n_weeks: int = 13,
 ) -> np.ndarray:
-    """Constant weekly rate per channel: (n_weeks, n_channels)."""
-    if list(allocation.coords.get("channel", []).values) != config.CHANNEL_COLUMNS:
-        raise ValueError("allocation channel coords must equal config.CHANNEL_COLUMNS")
+    """Weekly spend preserving flighting pattern: (n_weeks, n_channels).
+
+    For each channel j: ``weekly[:, j] = baseline_weekly[:, j] * (allocation[j] / baseline_quarterly[j])``.
+
+    The sum of weekly spend per channel equals ``allocation[j]``.
+    """
+    channels = list(allocation.coords.get("channel", []).values)
+    if set(channels) != set(baseline_quarterly.keys()):
+        raise ValueError(
+            f"allocation channels {channels} must match baseline_quarterly keys {list(baseline_quarterly.keys())}"
+        )
     vals = np.asarray(allocation.values, dtype=float)
     if np.any(vals < 0):
         raise ValueError("allocation must be non-negative")
-    return np.tile(vals / n_weeks, (n_weeks, 1))
+    baseline = np.asarray(baseline_weekly_spend, dtype=float)
+    if baseline.shape != (n_weeks, len(vals)):
+        raise ValueError(
+            f"baseline_weekly_spend must be ({n_weeks}, {len(vals)}), got {baseline.shape}"
+        )
+    scales = vals / np.array([baseline_quarterly[ch] for ch in channels])
+    return baseline * scales[np.newaxis, :]
 
 
 def simulate_quarter(
@@ -26,6 +43,7 @@ def simulate_quarter(
     df: pd.DataFrame,
     window: tuple[str, str],
     allocation: xr.DataArray,
+    q1_cfg,
     seed: int | None = None,
 ) -> np.ndarray:
     """(13,) simulated Q1 sales under allocation ``a``.
@@ -36,7 +54,9 @@ def simulate_quarter(
     """
     from mmm_evsi.importance import response_mu
 
-    weekly = allocation_to_weekly_spend(allocation, n_weeks=13)
+    weekly = allocation_to_weekly_spend(
+        allocation, q1_cfg.weekly_spend, q1_cfg.planned, n_weeks=13
+    )
     l_max = int(mmm.adstock.l_max)
     train_tail_dates = pd.date_range(
         end=pd.Timestamp(window[0]) - pd.Timedelta(days=7), periods=l_max, freq="7D"

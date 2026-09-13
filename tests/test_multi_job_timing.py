@@ -30,14 +30,16 @@ def test_multi_job_timing_5x10(mmm, idata, df, q1_cfg, q2_cfg, baseline_allocati
             baseline_allocation, q1_cfg, rng,
             E_max, V_Q1_baseline, n_iter=10,
         )
-        q1_weekly = allocation_to_weekly_spend(alloc, 13)
+        q1_weekly = allocation_to_weekly_spend(alloc, q1_cfg.weekly_spend, q1_cfg.planned, 13)
         
         for o in range(n_outcomes):
             y_star = simulate_quarter(
-                mmm, idata, df, q1_cfg.window, alloc, seed=42 + p * 10 + o
+                mmm, idata, df, q1_cfg.window, alloc, q1_cfg, seed=42 + p * 10 + o
             )
             ell = quarter_log_likelihood(
-                mmm, idata, df, q1_cfg.window, alloc, y_star
+                mmm, idata, df, q1_cfg.window, alloc, y_star,
+                baseline_weekly_spend=q1_cfg.weekly_spend,
+                baseline_quarterly=q1_cfg.planned,
             )
             psis = psis_weights(ell)
             verdict = apply_khat_policy(psis)

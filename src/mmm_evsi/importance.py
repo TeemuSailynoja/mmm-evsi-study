@@ -619,6 +619,8 @@ def quarter_log_likelihood(
     window: tuple[str, str],
     allocation: xr.DataArray,
     y_star: np.ndarray,
+    baseline_weekly_spend: np.ndarray | None = None,
+    baseline_quarterly: dict[str, float] | None = None,
 ) -> np.ndarray:
     """Joint log-likelihood of one simulated quarter: (S,) ``ell_s``.
 
@@ -632,7 +634,12 @@ def quarter_log_likelihood(
 
     from mmm_evsi.experiments import allocation_to_weekly_spend
 
-    weekly = allocation_to_weekly_spend(allocation, n_weeks=13)
+    weekly = allocation_to_weekly_spend(
+        allocation,
+        baseline_weekly_spend if baseline_weekly_spend is not None else np.zeros((13, 7)),
+        baseline_quarterly if baseline_quarterly is not None else {},
+        n_weeks=13,
+    )
     l_max = int(mmm.adstock.l_max)
     train_tail_dates = pd.date_range(
         end=pd.Timestamp(window[0]) - pd.Timedelta(days=7), periods=l_max, freq="7D"
@@ -694,7 +701,9 @@ def evaluate_allocation(
     from mmm_evsi.optimize_slsqp import WeightedSolveJob, run_weighted_solves
 
     pooled = pool_posterior(idata["posterior"].to_dataset())
-    q1_weekly = allocation_to_weekly_spend(allocation, 13)
+    q1_weekly = allocation_to_weekly_spend(
+        allocation, q1_cfg.weekly_spend, q1_cfg.planned, 13
+    )
 
     jobs = []
     khats: list[float] = []
@@ -703,7 +712,9 @@ def evaluate_allocation(
 
     def _process(y_star, idx, rseed):
         ell = quarter_log_likelihood(
-            mmm, idata, df, q1_cfg.window, allocation, y_star
+            mmm, idata, df, q1_cfg.window, allocation, y_star,
+            baseline_weekly_spend=q1_cfg.weekly_spend,
+            baseline_quarterly=q1_cfg.planned,
         )
         psis = psis_weights(ell)
         verdict = apply_khat_policy(psis)
@@ -735,14 +746,14 @@ def evaluate_allocation(
 
     if resample_seeds is not None:
         y_star = simulate_quarter(
-            mmm, idata, df, q1_cfg.window, allocation, seed=seed
+            mmm, idata, df, q1_cfg.window, allocation, q1_cfg, seed=seed
         )
         for k, rseed in enumerate(resample_seeds):
             _process(y_star, k, rseed)
     else:
         for i in range(n_outcomes):
             y_star = simulate_quarter(
-                mmm, idata, df, q1_cfg.window, allocation, seed=seed + i
+                mmm, idata, df, q1_cfg.window, allocation, q1_cfg, seed=seed + i
             )
             _process(y_star, i, seed + i)
 
@@ -755,7 +766,7 @@ def evaluate_allocation(
     utilities = np.array(
         [
             q2_expected_response(
-                mmm, job.posterior, df, job.q1_weekly_spend, r.budgets
+                mmm, job.posterior, df, job.q1_weekly_spend, r.budgets, q2_cfg
             )
             for job, r in zip(jobs, results)
         ],

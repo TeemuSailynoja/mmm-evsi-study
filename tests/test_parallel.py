@@ -46,10 +46,12 @@ def _build_jobs(mmm, idata, df, allocation, q1_cfg, n_jobs, seed):
     jobs = []
     for i in range(n_jobs):
         y_star = experiments.simulate_quarter(
-            mmm, idata, df, q1_cfg.window, allocation, seed=seed + i
+            mmm, idata, df, q1_cfg.window, allocation, q1_cfg, seed=seed + i
         )
         ell = importance.quarter_log_likelihood(
-            mmm, idata, df, q1_cfg.window, allocation, y_star
+            mmm, idata, df, q1_cfg.window, allocation, y_star,
+            baseline_weekly_spend=q1_cfg.weekly_spend,
+            baseline_quarterly=q1_cfg.planned,
         )
         psis = importance.psis_weights(ell)
         if importance.apply_khat_policy(psis).skipped:
@@ -57,7 +59,7 @@ def _build_jobs(mmm, idata, df, allocation, q1_cfg, n_jobs, seed):
         posterior_r = importance.resample_posterior(
             pooled, np.exp(psis.smoothed_log_weights), seed=10_000 + i
         )
-        q1_weekly = experiments.allocation_to_weekly_spend(allocation, 13)
+        q1_weekly = experiments.allocation_to_weekly_spend(allocation, q1_cfg.weekly_spend, q1_cfg.planned, 13)
         jobs.append(
             slsqp.WeightedSolveJob(
                 allocation=allocation,
