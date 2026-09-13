@@ -62,7 +62,7 @@ BOX_PCT = 0.30  # per channel/quarter: [1-BOX_PCT, 1+BOX_PCT] * planned spend
 LAMBDA = 1.0  # $1 Q1 revenue loss <=> $1 expected Q2 gain
 # Experimentation budget: cap on the lambda-weighted Q1 revenue loss.
 # Expressed as a fraction of the planned quarterly budget.
-E_MAX_FRACTION = 0.10  # 10% of total quarterly budget
+E_MAX_FRACTION = 0.20  # 20% of total quarterly budget
 
 # ---------------------------------------------------------------------------
 # Fitting (case study settings, 2x draws)
@@ -93,9 +93,9 @@ RESAMPLE_DRAWS = 2_000  # resample size for the Q2 solve (the 32k original
 # ---------------------------------------------------------------------------
 # Stage 3 — Bayesian optimization parameters
 # ---------------------------------------------------------------------------
-BO_N_EVALUATIONS = 100  # total function evaluations (LHS + BO iterations)
+BO_N_EVALUATIONS = 500  # total function evaluations (LHS + BO iterations)
 BO_N_INITIAL = 20  # LHS initial design size
-BO_N_OUTCOMES = 10  # simulated outcomes per proposal evaluation
+BO_N_OUTCOMES = 8  # simulated outcomes per proposal (divisible by default n_processes=8)
 BO_TOL = 1e-4  # relative improvement threshold for early stopping
 BO_PATIENCE = 10  # consecutive non-improvements to trigger early stop
 BO_N_DRAW_VQ1 = 100  # posterior draws for fast V_Q1 computation in BO loop

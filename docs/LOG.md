@@ -525,6 +525,19 @@ Implemented `CompiledResponseEvaluator` class in `src/mmm_evsi/importance.py`:
 - **[RESULT JSON]** Updated result JSON to include `best_q2_gain` and decomposed
   Q1/Q2 metrics in winner re-evaluation
 
+## 2025-01-XX — BO parameter update for deeper exploration
+
+- **[UPDATE]** `E_MAX_FRACTION`: 0.10 → 0.20 (10% → 20% of Q1 total budget)
+  - E_max increases from 1,620,103 to 3,240,207 (20% of Q1 total 16,201,033)
+  - Doubles the exploration budget, allowing the BO to propose more aggressive
+    perturbations before the Q1 revenue loss gate kicks in
+- **[UPDATE]** `BO_N_EVALUATIONS`: 100 → 500
+  - 480 BO iterations after the 20-eval LHS initial design (up from 80)
+  - Compensates for the larger feasible region with more evaluations
+- **[RATIONALE]** The ±30% channel boxes are much looser than E_max, so the
+  effective exploration radius is set by E_max. Doubling E_max widens the
+  search space; quadrupling evaluations gives the GP more data to learn from.
+
 ## 2025-01-XX — BO exploration vs exploitation analysis (200 evals)
 
 - **[RUN]** 200-evaluation BO completed in 1977s (32.9 min)
