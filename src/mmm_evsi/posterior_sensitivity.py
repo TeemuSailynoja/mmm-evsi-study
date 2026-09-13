@@ -382,6 +382,14 @@ def _run_q2_optimization(
 
     Returns (q2_value, optimal_allocation).
     """
+    # BudgetOptimizer.set_posterior() expects an xr.DataTree (or InferenceData),
+    # not a plain xr.Dataset. Wrap the dataset in a DataTree under the
+    # "posterior" group so the internal _extract_dataset(node, "posterior")
+    # call succeeds.
+    from xarray import DataTree
+
+    posterior_dt = DataTree.from_dict({"/posterior": reweighted_posterior})
+
     # Create a WeightedSolveJob and run it
     job = WeightedSolveJob(
         allocation=x0 if x0 is not None else xr.DataArray(
@@ -390,7 +398,7 @@ def _run_q2_optimization(
             dims=["channel"],
         ),
         outcome_index=0,
-        posterior=reweighted_posterior,
+        posterior=posterior_dt,
         q1_weekly_spend=q1_weekly_spend,
         y_star=None,
         khat=0.0,
@@ -509,12 +517,18 @@ def run_sensitivity_configuration(
     q2_shift = None
     if include_q2:
         q1_weekly = allocation_to_weekly_spend(scaled_allocation, 13)
+        # Q2 baseline allocation (from q2_cfg.planned, not q1_cfg)
+        q2_baseline_allocation = xr.DataArray(
+            list(q2_cfg.planned.values()),
+            coords={"channel": list(q2_cfg.planned.keys())},
+            dims=["channel"],
+        )
         try:
             q2_value, q2_alloc = _run_q2_optimization(
-                mmm, df, reweighted, q1_weekly, q2_cfg, x0=baseline_allocation
+                mmm, df, reweighted, q1_weekly, q2_cfg, x0=q2_baseline_allocation
             )
             baseline_q2_value = q2_expected_response(
-                mmm, original_pooled, df, q1_weekly, q2_cfg
+                mmm, original_pooled, df, q1_weekly, q2_baseline_allocation
             )
             q2_shift = Q2Shift(
                 channel=channel,
@@ -522,8 +536,8 @@ def run_sensitivity_configuration(
                 baseline_q2_value=baseline_q2_value,
                 reweighted_q2_value=q2_value,
                 q2_value_delta=q2_value - baseline_q2_value,
-                q2_allocation_delta=np.asarray(q2_alloc.values) - np.asarray(baseline_allocation.values),
-                q2_allocation_max_delta=float(np.max(np.abs(q2_alloc.values - baseline_allocation.values))),
+                q2_allocation_delta=np.asarray(q2_alloc.values) - np.asarray(q2_baseline_allocation.values),
+                q2_allocation_max_delta=float(np.max(np.abs(q2_alloc.values - q2_baseline_allocation.values))),
                 n_accepted=1,
                 n_skipped=0,
                 khat=psis.khat,
