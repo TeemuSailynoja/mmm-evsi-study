@@ -91,6 +91,10 @@ Why this is non-trivial:
    (6 free dimensions). Outer BO dimensionality = **7**. BO flavor: **GP**
    (GPyTorch on GPU) or trust-region / particle swarm acceptable; start with
    random/Latin hypercube sweeps for validation, then the surrogate.
+   **Note (2025-09-12)**: Flighting-aware spend conversion is implemented —
+   weekly spend preserves baseline patterns scaled by allocation ratio.
+   Full week-by-week optimization (each week as a decision variable) remains
+   deferred.
 3. **pymc-marketing**: **install from PR #3002** (pin the PR head SHA),
    upgrade to the merged release later. This gives `SharedPosterior` +
    `BudgetOptimizer.set_posterior()` for no-recompile draw swapping.

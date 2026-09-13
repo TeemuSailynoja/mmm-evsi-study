@@ -640,3 +640,42 @@ Implemented `CompiledResponseEvaluator` class in `src/mmm_evsi/importance.py`:
   - BO_N_OUTCOMES: 8
   - BO_N_INITIAL: 20
   - BOX_PCT: 0.3 (±30% symmetric boxes)
+
+## 2025-09-12 — Flighting-Aware Spend Implementation
+
+### Problem
+`allocation_to_weekly_spend()` was `np.tile(vals/n_weeks, (13, 1))` — completely discarding historical flighting patterns. This meant BO and Q2 optimization assumed constant weekly spend, which is unrealistic.
+
+### Solution
+Implemented flighting-aware weekly spend across the full pipeline:
+
+**Phase 1 — Data layer (`budgets.py`, `load_mmm.py`)**
+- Added `planned_weekly_spend(df, window) -> np.ndarray` returning `(13, 7)` array
+- Added `weekly_spend: np.ndarray` field to `QuarterBudget` dataclass
+- `load_budgets()` now computes and stores weekly spend for Q1 and Q2
+
+**Phase 2 — Conversion (`experiments.py`, `importance.py`)**
+- `allocation_to_weekly_spend()` signature changed:
+  ```python
+  def allocation_to_weekly_spend(allocation, baseline_weekly_spend, baseline_quarterly, n_weeks=13)
+  ```
+- Scaling formula: `weekly[:, j] = baseline_weekly[:, j] * (allocation[j] / baseline_quarterly[j])`
+- Sum of weekly spend per channel equals allocation value by construction
+- Updated `simulate_quarter()`, `quarter_log_likelihood()`, `evaluate_allocation()`
+
+**Phase 3 — Q2 optimization (`optimize_slsqp.py`)**
+- `q2_expected_response()` now takes `q2_cfg: QuarterBudget` parameter
+- Replaces flat spend: `np.tile(budgets/13, (13, 1))` → flighting-aware scaling
+
+**Phase 4 — BO and sensitivity (`bo_design.py`, `posterior_sensitivity.py`)**
+- `compute_v_q1()` uses flighting-aware weekly spend
+- `_run_q2_optimization()` and sensitivity Q2 baseline use flighting-aware spend
+
+**Phase 5 — Test updates**
+- Updated 5 test files: `test_bo_optimizer_cache.py`, `test_carry_in_optimizer.py`, `test_multi_job_timing.py`, `test_parallel.py`, `test_weighted_solve.py`
+- All 11 key tests pass
+
+### Verification
+- All callers verified: 5 source + 5 test files, all using new 4-argument signature
+- `allocation_to_weekly_spend()` preserves sum invariant: `sum(weekly[:, j]) == allocation[j]`
+- Signatures: `simulate_quarter()` now requires `q1_cfg`, `quarter_log_likelihood()` has optional baseline params
