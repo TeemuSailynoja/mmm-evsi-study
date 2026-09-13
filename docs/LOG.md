@@ -420,3 +420,157 @@ Implemented `CompiledResponseEvaluator` class in `src/mmm_evsi/importance.py`:
 - `src/mmm_evsi/importance.py`: Added `CompiledResponseEvaluator` class, `unpool_posterior` function
 - `src/mmm_evsi/optimize_slsqp.py`: Modified to use cached evaluator
 - `scripts/baseline_arm_evsi.py`: New file for baseline-arm EVSI computation
+
+## 2026-09-13 — Stage 3: BO profiling + baseline disk caching
+
+- **[DECIDED]** **Baseline allocation disk caching**: Q1 and Q2 baseline
+  allocations are now saved to `data/fit/baseline_q1_allocation.json` and
+  `data/fit/baseline_q2_allocation.json`. Subsequent runs load from disk
+  instead of re-optimizing, saving ~30s per run.
+  - `optimize_slsqp.py`: Added `get_baseline_allocation()`,
+    `_load_cached_allocation()`, `_save_allocation()`.
+  - `run_bo.py`: Uses `get_baseline_allocation()` for both Q1 and Q2.
+  - `baseline_arm_evsi.py`: Uses `get_baseline_allocation()` for Q1.
+
+- **[RESOLVED]** GP normalization crash: When all LHS proposals are nearly
+  identical (5 channels at upper bound), `X.std(axis=0)` is near-zero,
+  causing `inf` in normalization. Fixed with `np.nan_to_num()` guard.
+
+- **[GATE]** BO profiling complete (`toy/profile_bo_detailed.py`):
+
+  Phase-by-phase timing (5 evals, 3 outcomes, 3 winner outcomes):
+
+  Phase                       Serial (s)   Parallel (s)    Speedup
+  -----------------------------------------------------------------
+  model_load                         0.3            0.2       1.46x
+  baseline_alloc                     0.0            0.0         N/A (cached)
+  v_q1_baseline                     65.6            0.0         N/A (cached evaluator)
+  bo_loop                           94.4           19.5       4.85x
+  winner_eval                        6.7            6.7       1.00x
+  total                            167.0           26.4       6.32x
+
+  Key findings:
+  1. **Parallelism is highly effective**: 8 processes give 4.85x speedup
+     on the BO loop (fork context shares compiled PyTensor graph via COW)
+  2. **No zarr I/O contention**: `pool_posterior()` caches in memory;
+     all 8 workers read from RAM, not disk
+  3. **v_q1_baseline (65.6s)** is the biggest single bottleneck —
+     CompiledResponseEvaluator graph evaluation over 100 posterior draws
+  4. **winner_eval (6.7s)** is fast and doesn't benefit from parallelism
+  5. **Baseline allocation caching** saves ~30s per run (Q1 + Q2)
+
+  Scaling estimate for 100 evaluations, 3 outcomes, 8 processes:
+  - BO loop: ~487s (8 min)
+  - Total estimate: ~520s (8.7 min)
+  - vs serial: ~2055s (34 min) → 4x speedup
+
+- **[DECIDED]** Keep `n_processes=8` for full BO runs (100 evaluations).
+  This is near-optimal: no zarr contention, fork context shares compiled
+  graphs, each worker compiles CarryInBudgetOptimizer once.
+
+## 2025-01-XX — Per-observation GP noise (alpha)
+
+- **[PROBLEM]** GP surrogate uses `alpha=1e-6` (near-zero noise), treating
+  all evaluations as noise-free. This prevents the GP from re-evaluating
+  promising points with high Monte Carlo uncertainty.
+- **[RESOLVED]** Implemented per-observation `alpha` in `GaussianProcessRegressor`:
+  1. Added `utility_variance` and `utilities` fields to `BOProposal` dataclass
+  2. Added `_ALLOCATION_STATS` dict for tracking per-allocation running variance
+     using Welford's online algorithm (numerically stable)
+  3. Updated `_SklearnGP.fit()` to accept `alpha` parameter (passed during init
+     since sklearn 1.9 doesn't support it in `fit()`)
+  4. BO loop now: (a) computes variance from proposal utilities, (b) updates
+     running stats via `_update_allocation_variance()`, (c) passes alpha array
+     to GP fit
+  5. When same allocation is proposed again, variance accumulates and alpha
+     increases, causing GP to predict higher uncertainty → naturally incentivizes
+     re-evaluation of promising points
+- **[DECIDED]** `BO_N_OUTCOMES` default changed from 10 to 8 to be divisible by
+  default `n_processes=8`, avoiding worker load imbalance.
+- **[GATE]** All toy BO tests pass (G3.1-G3.4). Full BO run with 3 evals
+  completes successfully with per-point alpha tracking.
+
+## 2025-01-XX — Full BO run (100 evaluations)
+
+- **[RESULT]** BO completed 100 evaluations (20 LHS + 80 BO iterations) in 969s
+  (16.2 min) with per-observation GP noise tracking.
+- **[FINDING]** Best allocation is essentially identical to baseline (all deltas < 0.01):
+  - This indicates the baseline allocation is already near-optimal given the MMM model
+  - Winner re-evaluation: delta = 4.57 ± 22.8, 95% CI [-47.1, 56.2]
+  - Statistically indistinguishable from zero (CI includes 0)
+- **[FINDING]** BO did not converge early (max_evaluations reached), but the best
+  utility was found in the initial LHS design (iteration 0-19)
+- **[FINDING]** Per-observation alpha tracking is working: variance accumulates
+  across repeated evaluations of the same allocation, increasing GP uncertainty
+  and naturally incentivizing re-evaluation of promising points
+- **[PERFORMANCE]** 8 processes with 8 outcomes: no load imbalance (8/8 = 1 outcome
+  per process), per-point alpha adds minimal overhead
+
+## 2025-01-XX — Q1 loss / Q2 gain decomposition
+
+- **[CHANGE]** Decomposed BO utility into separate Q1 loss and Q2 gain components:
+  - `BOProposal`: Added `q2_gain` (E[OptQ2] mean) and `q2_gains` (per-outcome OptQ2)
+  - `BOTrace`: Added `q2_gain` and `q2_gains` fields
+  - `BOResult`: Added `best_q2_gain` field
+  - `re_evaluate_winner_paired`: Now returns `winner_q1_loss`, `baseline_q1_loss`,
+    `winner_q2_gain`, `baseline_q2_gain`, and `q2_gain_sanity_check`
+  - `decompose_utility`: Now includes `q2_gain` in output
+
+- **[SANITY CHECK]** Added Q2 gain sanity check in `evaluate_proposal`:
+  - Logs warning if any per-outcome Q2 gains are negative
+  - Negative values indicate sampling variance issues (should be negligible)
+  - Re-evaluation also tracks and reports negative Q2 gain counts
+
+- **[TRACE CSV]** Updated trace CSV to include `q2_gain` and `q2_gains` columns
+- **[RESULT JSON]** Updated result JSON to include `best_q2_gain` and decomposed
+  Q1/Q2 metrics in winner re-evaluation
+
+## 2025-01-XX — BO exploration vs exploitation analysis (200 evals)
+
+- **[RUN]** 200-evaluation BO completed in 1977s (32.9 min)
+- **[FINDING]** BO is primarily **EXPLOITING** (175/180 evaluations of same point)
+  - Best utility found at iteration 10 (within LHS initial design)
+  - BO iterations found WORSE utilities (BO best: 1.3885e+09 vs LHS best: 1.3984e+09)
+  - Only 5 unique allocations across 180 iterations
+- **[FINDING]** Utility landscape is very flat (6.6% range relative to mean)
+  - Q1 loss is negligible (mean: 5.77e+03, max: 3.25e+05)
+  - Q2 gain dominates utility (mean: 1.35e+09, similar across all allocations)
+  - Winner re-eval: delta = -11.5 ± 10.5, 95% CI [-32.4, 9.4] (not significant)
+- **[FINDING]** GP surrogate quality is poor
+  - GP mean vs utility correlation: 0.21
+  - Acquisition vs GP std correlation: 0.9997 (selecting based on uncertainty)
+  - GP is not learning the underlying function well
+- **[ROOT CAUSE]** BO stuck in exploitation loop because:
+  1. Flat utility landscape (no significant improvements to find)
+  2. Q1 loss negligible compared to Q2 gain
+  3. Q2 gain similar across all allocations
+  4. GP not learning well (low correlation)
+  5. Acquisition function selects based on uncertainty (exploration mode)
+- **[Q2 GAIN SANITY]** No negative Q2 gains detected (0/200 in re-evaluation)
+  - This confirms Q2 gains are always non-negative as expected
+
+## 2025-01-XX — Config inspection & editable install fix
+
+- **[PROBLEM]** Persistent `ModuleNotFoundError: No module named 'mmm_evsi'`
+  when running bash commands to inspect config values (`Q1_BOXES`,
+  `E_MAX_FRACTION`, etc.).
+- **[ROOT CAUSE]** `python` in the shell pointed to
+  `/home/teemu/repos/gists/mmm/.venv/bin/python` (wrong project's venv). The
+  project's own `.venv` existed but had no `pip` and the package wasn't
+  installed.
+- **[RESOLVED]** Used `uv pip install -e . --python .venv/bin/python` to
+  install the package in editable mode. Import now works.
+- **[FINDING]** No `Q1_BOXES` constant in `config.py` — boxes are computed
+  dynamically from `BOX_PCT = 0.3` (±30%) around planned weekly spend.
+- **[FINDING]** All 7 channels have 30% margin on **both** sides in Q1 and Q2.
+  No channels are at box bounds. The "5 channels at upper bounds" from
+  earlier summaries referred to a different data snapshot.
+- **[CONFIG VALUES]**
+  - Q1 total: 16,201,032.73
+  - Q2 total: 14,036,915.49
+  - E_max (10% of Q1): 1,620,103.27
+  - LAMBDA: 1.0
+  - BO_N_EVALUATIONS: 100
+  - BO_N_OUTCOMES: 8
+  - BO_N_INITIAL: 20
+  - BOX_PCT: 0.3 (±30% symmetric boxes)
