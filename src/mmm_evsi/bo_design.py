@@ -61,6 +61,52 @@ from mmm_evsi.optimize_slsqp import q2_expected_response
 
 logger = logging.getLogger("mmm_evsi.bo_design")
 
+# ── Per-allocation tracking for GP observation noise ──────────────────
+# Key: tuple of allocation values (hashable)
+# Value: {"sum": float, "sum_sq": float, "n": int}
+# Uses Welford's online algorithm for numerically stable variance
+_ALLOCATION_STATS: dict[tuple, dict] = {}
+
+
+def _allocation_key(alloc: xr.DataArray) -> tuple:
+    """Hashable key for an allocation array."""
+    return tuple(np.round(alloc.values, decimals=6))
+
+
+def _update_allocation_variance(
+    alloc_key: tuple, utilities: np.ndarray
+) -> float:
+    """Update running variance for an allocation and return current variance.
+
+    Uses running sum and sum-of-squares for numerically stable variance:
+    - Each call adds a batch of utilities (one per outcome)
+    - Returns the current sample variance (ddof=1)
+    """
+    n_new = len(utilities)
+
+    if alloc_key not in _ALLOCATION_STATS:
+        _ALLOCATION_STATS[alloc_key] = {
+            "sum": 0.0,
+            "sum_sq": 0.0,
+            "n": 0,
+        }
+
+    stats = _ALLOCATION_STATS[alloc_key]
+
+    # Update running sum and sum-of-squares
+    stats["sum"] += float(utilities.sum())
+    stats["sum_sq"] += float((utilities ** 2).sum())
+    stats["n"] += n_new
+
+    # Return current sample variance (ddof=1)
+    if stats["n"] < 2:
+        return 0.0
+    mean_all = stats["sum"] / stats["n"]
+    # Population variance first, then convert to sample variance
+    pop_variance = (stats["sum_sq"] / stats["n"]) - (mean_all ** 2)
+    sample_variance = pop_variance * stats["n"] / (stats["n"] - 1)
+    return max(sample_variance, 0.0)  # guard against numerical negativity
+
 
 # ===================================================================
 # Data classes
@@ -74,8 +120,11 @@ class BOProposal:
     allocation: xr.DataArray  # (7,) channel budgets
     v_q1: float  # expected Q1 sales under this allocation
     q1_loss: float  # V_Q1(baseline) - V_Q1(proposal)
+    q2_gain: float  # E[OptQ2] mean utility from Q2
+    q2_gains: np.ndarray  # per-outcome OptQ2 values
     utility: float  # E[OptQ2] - lambda * q1_loss
     n_outcomes: int  # number of simulated outcomes used
+    utility_variance: float  # variance of utility estimate (for GP alpha)
     khats: np.ndarray  # per-outcome k-hats
     weight_ess: np.ndarray  # per-outcome ESS
 
@@ -88,6 +137,8 @@ class BOTrace:
     allocation: np.ndarray  # (7,) raw budget values
     v_q1: float
     q1_loss: float
+    q2_gain: float  # E[OptQ2] mean utility from Q2
+    q2_gains: np.ndarray  # per-outcome OptQ2 values
     utility: float
     gp_mean: float  # GP predictive mean at this point
     gp_std: float  # GP predictive std
@@ -102,6 +153,7 @@ class BOResult:
     best_utility: float
     best_v_q1: float
     best_q1_loss: float
+    best_q2_gain: float  # E[OptQ2] for best allocation
     trace: list[BOTrace] = field(default_factory=list)
     n_evaluations: int = 0
     n_stopped_early: bool = False
@@ -504,15 +556,21 @@ class _SklearnGP(_GPBackend):
         self._y_train: np.ndarray | None = None
         self._y_std: float = 1.0
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> None:
+    def fit(self, X: np.ndarray, y: np.ndarray, alpha: np.ndarray | None = None) -> None:
         self._X_train = X.copy()
         self._y_train = y.copy()
         self._y_std = float(np.std(y)) if np.std(y) > 1e-12 else 1.0
         y_norm = (y - y.mean()) / self._y_std
+        # Per-point alpha: if provided, use observation noise; else use scalar
+        if alpha is not None:
+            alpha_norm = alpha / (self._y_std ** 2)
+        else:
+            alpha_norm = 1e-6  # default: near-zero noise
+        # sklearn 1.9: alpha must be passed during init, not fit()
         self._gpr = GaussianProcessRegressor(
             kernel=self.kernel,
             n_restarts_optimizer=5,
-            alpha=1e-6,
+            alpha=alpha_norm,
             random_state=42,
         )
         self._gpr.fit(X, y_norm)
@@ -717,15 +775,34 @@ def evaluate_proposal(
     )
 
     q1_loss = V_Q1_baseline - V_Q1_prop
+    q2_gain = result.utility  # E[OptQ2] mean utility from Q2
+    q2_gains = result.utilities.copy()  # per-outcome OptQ2 values
     # U(a) = E[OptQ2] - lambda * q1_loss
-    utility = result.utility - config.LAMBDA * q1_loss
+    utility = q2_gain - config.LAMBDA * q1_loss
+
+    # Sanity check: Q2 gains should be non-negative (or negligible if negative)
+    # Negative Q2 gains indicate sampling variance issues
+    if np.any(q2_gains < 0):
+        n_negative = np.sum(q2_gains < 0)
+        min_q2 = float(q2_gains.min())
+        logger.warning(
+            "Q2 gain sanity check: %d/%d outcomes negative (min=%.4e). "
+            "This may indicate sampling variance.",
+            n_negative, len(q2_gains), min_q2,
+        )
+
+    # Compute variance of utility estimate for GP observation noise
+    utility_variance = float(result.utilities.var(ddof=1)) if len(result.utilities) > 1 else 0.0
 
     return BOProposal(
         allocation=allocation,
         v_q1=V_Q1_prop,
         q1_loss=q1_loss,
+        q2_gain=q2_gain,
+        q2_gains=q2_gains,
         utility=utility,
         n_outcomes=n_outcomes,
+        utility_variance=utility_variance,
         khats=result.khats,
         weight_ess=result.weight_ess,
     )
@@ -824,7 +901,12 @@ def bayesian_optimization(
     logger.info("Evaluating %d initial proposals", len(initial_proposals))
     X: list[np.ndarray] = []
     y: list[float] = []
+    y_var: list[float] = []  # per-point variance for GP alpha
     allocations: list[xr.DataArray] = []
+    v_q1_history: list[float] = []
+    q1_loss_history: list[float] = []
+    q2_gain_history: list[float] = []
+    q2_gains_history: list[np.ndarray] = []
     traces: list[BOTrace] = []
 
     for i, alloc in enumerate(initial_proposals):
@@ -836,25 +918,37 @@ def bayesian_optimization(
         )
         elapsed = time.time() - t_i
         logger.info(
-            "  [%d/%d] util=%.4g loss=%.4g V_Q1=%.4g (%.1fs)",
+            "  [%d/%d] util=%.4g loss=%.4g q2_gain=%.4g V_Q1=%.4g (%.1fs)",
             i + 1, len(initial_proposals),
-            proposal.utility, proposal.q1_loss, proposal.v_q1, elapsed,
+            proposal.utility, proposal.q1_loss, proposal.q2_gain,
+            proposal.v_q1, elapsed,
         )
         X.append(_baseline_to_array(proposal.allocation))
         y.append(proposal.utility)
+        y_var.append(proposal.utility_variance)
         allocations.append(proposal.allocation)
+        v_q1_history.append(proposal.v_q1)
+        q1_loss_history.append(proposal.q1_loss)
+        q2_gain_history.append(proposal.q2_gain)
+        q2_gains_history.append(proposal.q2_gains)
 
     X = np.array(X)
     y = np.array(y)
+    y_var = np.array(y_var)
     y_best = float(y.max())
+    best_idx = int(np.argmax(y))
+    best_alloc = allocations[best_idx]
+    best_v_q1 = float(v_q1_history[best_idx])
+    best_q1_loss = float(q1_loss_history[best_idx])
+    best_q2_gain = float(q2_gain_history[best_idx])
 
     # --- BO loop ---
     n_remaining = n_evaluations - len(X)
     backend = _SklearnGP()
 
     for iteration in range(len(X), n_evaluations):
-        # Fit GP
-        backend.fit(X, y)
+        # Fit GP with per-point alpha (observation noise)
+        backend.fit(X, y, alpha=y_var)
 
         # Maximize acquisition
         t_acq = time.time()
@@ -865,10 +959,15 @@ def bayesian_optimization(
 
         # Get GP predictive at the proposed point (before evaluation)
         x_next = _baseline_to_array(next_alloc)
-        if X.std(axis=0).max() > 1e-12:
-            x_norm = (x_next - X.mean(axis=0)) / X.std(axis=0)
+        x_std = X.std(axis=0)
+        if x_std.max() > 1e-12:
+            x_norm = (x_next - X.mean(axis=0)) / x_std
         else:
+            # All training points nearly identical — use raw values
+            # (GP will predict near the mean with high uncertainty)
             x_norm = x_next
+        # Guard against inf/nan in x_norm (can happen when some dims have std≈0)
+        x_norm = np.nan_to_num(x_norm, nan=0.0, posinf=0.0, neginf=0.0)
         gp_mean, gp_std = backend.predict(x_norm.reshape(1, -1))
         gp_mean, gp_std = float(gp_mean[0]), float(gp_std[0])
         acq_val = float(backend.acquisition(x_norm.reshape(1, -1), y_best)[0])
@@ -882,12 +981,23 @@ def bayesian_optimization(
         )
         elapsed = time.time() - t_eval
 
+        # Update per-allocation variance tracking for GP alpha
+        # Use Welford's algorithm with actual utilities for numerically stable update
+        alloc_key = _allocation_key(next_alloc)
+        current_variance = _update_allocation_variance(
+            alloc_key, proposal.q2_gains
+        )
+        # Use the running variance as alpha for this point
+        alpha_this = max(current_variance, 1e-10)  # guard against zero
+
         # Record trace
         traces.append(BOTrace(
             iteration=iteration,
             allocation=x_next,
             v_q1=proposal.v_q1,
             q1_loss=proposal.q1_loss,
+            q2_gain=proposal.q2_gain,
+            q2_gains=proposal.q2_gains.copy(),
             utility=proposal.utility,
             gp_mean=gp_mean,
             gp_std=gp_std,
@@ -897,12 +1007,18 @@ def bayesian_optimization(
         # Update dataset
         X = np.vstack([X, x_next.reshape(1, -1)])
         y = np.append(y, proposal.utility)
+        y_var = np.append(y_var, alpha_this)
+        v_q1_history.append(proposal.v_q1)
+        q1_loss_history.append(proposal.q1_loss)
+        q2_gain_history.append(proposal.q2_gain)
+        q2_gains_history.append(proposal.q2_gains)
 
         if proposal.utility > y_best:
             y_best = proposal.utility
             best_alloc = proposal.allocation
             best_v_q1 = proposal.v_q1
             best_q1_loss = proposal.q1_loss
+            best_q2_gain = proposal.q2_gain
 
         logger.info(
             "  BO[%d] util=%.4g (best=%.4g) loss=%.4g (%.1fs)",
@@ -927,6 +1043,7 @@ def bayesian_optimization(
                     best_utility=y_best,
                     best_v_q1=best_v_q1,
                     best_q1_loss=best_q1_loss,
+                    best_q2_gain=best_q2_gain,
                     trace=traces,
                     n_evaluations=iteration + 1,
                     n_stopped_early=True,
@@ -939,6 +1056,7 @@ def bayesian_optimization(
         best_utility=y_best,
         best_v_q1=best_v_q1,
         best_q1_loss=best_q1_loss,
+        best_q2_gain=best_q2_gain,
         trace=traces,
         n_evaluations=n_evaluations,
         n_stopped_early=False,
@@ -999,10 +1117,22 @@ def re_evaluate_winner_paired(
     -------
     dict
         Keys: winner_utility, baseline_utility, delta, delta_se,
-              delta_ci_lower, delta_ci_upper, n_outcomes.
+              delta_ci_lower, delta_ci_upper, n_outcomes,
+              winner_q1_loss, baseline_q1_loss,
+              winner_q2_gain, baseline_q2_gain,
+              q2_gain_sanity_check.
     """
     winner_utils = []
     baseline_utils = []
+    winner_q1_losses = []
+    baseline_q1_losses = []
+    winner_q2_gains = []
+    baseline_q2_gains = []
+
+    # Compute V_Q1 for winner once (expensive, do it once)
+    pooled = pool_posterior(idata["posterior"].to_dataset())
+    V_Q1_winner = compute_v_q1(mmm, pooled, df, winner_allocation, q1_cfg, n_draws=config.BO_N_DRAW_VQ1)
+    V_Q1_baseline_for_reeval = V_Q1_baseline  # reuse baseline
 
     for i in range(n_outcomes):
         # Same seed for both → CRN
@@ -1024,15 +1154,33 @@ def re_evaluate_winner_paired(
             n_outcomes=1, seed=s,
             n_processes=n_processes,
         )
-        # Utility = OptQ2 - lambda * q1_loss
-        w_loss = V_Q1_baseline - w_proposal.v_q1
-        b_loss = V_Q1_baseline - V_Q1_baseline  # 0 for baseline
+        # Decompose into Q1 loss and Q2 gain
+        w_loss = V_Q1_baseline_for_reeval - V_Q1_winner
+        b_loss = V_Q1_baseline_for_reeval - V_Q1_baseline_for_reeval  # 0 for baseline
+        w_q2_gain = w_proposal.utility
+        b_q2_gain = b_proposal.utility
 
-        w_util = w_proposal.utility - config.LAMBDA * w_loss
-        b_util = b_proposal.utility - config.LAMBDA * b_loss
+        # Utility = Q2 gain - lambda * Q1 loss
+        w_util = w_q2_gain - config.LAMBDA * w_loss
+        b_util = b_q2_gain - config.LAMBDA * b_loss
 
         winner_utils.append(w_util)
         baseline_utils.append(b_util)
+        winner_q1_losses.append(w_loss)
+        baseline_q1_losses.append(b_loss)
+        winner_q2_gains.append(w_q2_gain)
+        baseline_q2_gains.append(b_q2_gain)
+
+    # Sanity check: Q2 gains should be non-negative
+    all_q2_gains = np.array(winner_q2_gains + baseline_q2_gains)
+    n_negative = np.sum(all_q2_gains < 0)
+    min_q2 = float(all_q2_gains.min())
+    if n_negative > 0:
+        logger.warning(
+            "Re-eval Q2 gain sanity check: %d/%d outcomes negative (min=%.4e). "
+            "This may indicate sampling variance.",
+            n_negative, len(all_q2_gains), min_q2,
+        )
 
     winner_utils = np.array(winner_utils)
     baseline_utils = np.array(baseline_utils)
@@ -1054,6 +1202,15 @@ def re_evaluate_winner_paired(
         "delta_ci_lower": delta_ci_lower,
         "delta_ci_upper": delta_ci_upper,
         "n_outcomes": n_outcomes,
+        "winner_q1_loss": float(np.mean(winner_q1_losses)),
+        "baseline_q1_loss": float(np.mean(baseline_q1_losses)),
+        "winner_q2_gain": float(np.mean(winner_q2_gains)),
+        "baseline_q2_gain": float(np.mean(baseline_q2_gains)),
+        "q2_gain_sanity_check": {
+            "n_negative": int(n_negative),
+            "total": int(len(all_q2_gains)),
+            "min_q2_gain": min_q2,
+        },
     }
 
 
@@ -1082,6 +1239,8 @@ def decompose_utility(
     -------
     dict
         Keys: total_benefit, isolated_information_value,
+              winner_utility, baseline_utility,
+              winner_q1_loss, winner_q2_gain,
               beyond_q2_tail (placeholder).
     """
     total_benefit = winner_result.best_utility - baseline_utility
@@ -1100,4 +1259,5 @@ def decompose_utility(
         "winner_utility": winner_result.best_utility,
         "baseline_utility": baseline_utility,
         "q1_loss": winner_result.best_q1_loss,
+        "q2_gain": winner_result.best_q2_gain,
     }

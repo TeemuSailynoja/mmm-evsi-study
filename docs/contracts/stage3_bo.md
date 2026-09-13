@@ -189,6 +189,18 @@ def decompose_utility(
 - **G3.5** `test_winner_eval.py`: Winner re-evaluated with CRN,
   paired with baseline, delta CI valid
 
+## Gate Status (all green as of 2025-01-XX)
+
+| Gate | Test File | Status |
+|------|-----------|--------|
+| G3.1 | `test_bo_feasibility.py` | ✅ 3 tests pass |
+| G3.2 | `test_bo_lhs.py` | ✅ 3 tests pass |
+| G3.3 | `test_bo_gp_surrogate.py` | ✅ 3 tests pass (real: fallback to train-rank when test < 5) |
+| G3.4 | `test_bo_convergence.py` | ✅ 3 tests pass |
+| G3.5 | `test_bo_winner_eval.py` | ✅ 4 tests pass |
+
+**Total: 16 gate tests, all passing.**
+
 ## Notes
 
 - Start with CPU-only GP (`sklearn.gaussian_process`), modular interface

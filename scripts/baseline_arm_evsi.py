@@ -28,7 +28,6 @@ import time
 import numpy as np
 
 from mmm_evsi import config
-from mmm_evsi.baseline import solve_baseline
 from mmm_evsi.carry_in_optimizer import CarryInBudgetOptimizer
 from mmm_evsi.experiments import allocation_to_weekly_spend, simulate_quarter
 from mmm_evsi.importance import (
@@ -43,6 +42,7 @@ from mmm_evsi.load_mmm import load_budgets, load_case_study_data, load_mmm
 from mmm_evsi.optimize_slsqp import (
     WeightedSolveJob,
     _solve_on_wrapper,
+    get_baseline_allocation,
     q2_expected_response,
 )
 
@@ -65,7 +65,7 @@ def main() -> None:
     df = load_case_study_data()
     budgets = load_budgets()
     q1_cfg, q2_cfg = budgets.q1, budgets.q2
-    a0 = solve_baseline(mmm, config.Q1_WINDOW, q1_cfg).budgets
+    a0 = get_baseline_allocation(mmm, q1_cfg, "Q1")
     a0_weekly = allocation_to_weekly_spend(a0, 13)
     pooled = pool_posterior(idata["posterior"].to_dataset())
     print(f"[{time.time() - t0:.0f}s] load + baseline Q1", flush=True)

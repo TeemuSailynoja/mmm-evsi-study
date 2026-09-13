@@ -206,8 +206,9 @@ def test_g34_real_bo_trace_recorded(
     assert result.n_evaluations > 0, "n_evaluations is 0"
 
     for i, trace_entry in enumerate(result.trace):
-        assert trace_entry.iteration == i, (
-            f"trace iteration mismatch at index {i}"
+        # iteration field is the actual BO iteration number (n_initial, n_initial+1, ...)
+        assert trace_entry.iteration == n_initial + i, (
+            f"trace iteration mismatch at index {i}: expected {n_initial + i}, got {trace_entry.iteration}"
         )
         assert np.isfinite(trace_entry.utility), (
             f"trace[{i}]: utility is not finite"
