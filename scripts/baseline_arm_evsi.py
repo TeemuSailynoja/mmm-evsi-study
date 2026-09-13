@@ -66,7 +66,10 @@ def main() -> None:
     budgets = load_budgets()
     q1_cfg, q2_cfg = budgets.q1, budgets.q2
     a0 = get_baseline_allocation(mmm, q1_cfg, "Q1")
-    a0_weekly = allocation_to_weekly_spend(a0, 13)
+    a0_q2 = get_baseline_allocation(mmm, q2_cfg, "Q2")
+    a0_weekly = allocation_to_weekly_spend(
+        a0, q1_cfg.weekly_spend, q1_cfg.planned, 13
+    )
     pooled = pool_posterior(idata["posterior"].to_dataset())
     print(f"[{time.time() - t0:.0f}s] load + baseline Q1", flush=True)
 
@@ -86,13 +89,26 @@ def main() -> None:
     else:
         t1 = time.time()
         w.set_q1_carry_in(np.asarray(a0_weekly, dtype=float))
-        prior_res = w.allocate_budget(
-            total_budget=q2_cfg.total,
-            budget_bounds=q2_cfg.boxes,
-            minimize_kwargs={"options": {"ftol": 1e-6}},
-        )
+        # Retry logic for SLSQP "positive directional derivative" failures
+        prior_res = None
+        for ftol in [1e-6, 1e-4, 1e-2, 1e-1]:
+            try:
+                prior_res = w.allocate_budget(
+                    total_budget=q2_cfg.total,
+                    budget_bounds=q2_cfg.boxes,
+                    x0=a0_q2.values,
+                    minimize_kwargs={"options": {"ftol": ftol}},
+                )
+                break
+            except Exception as e:
+                print(
+                    f"  OptQ2(prior) retry ftol={ftol}: {e}",
+                    flush=True,
+                )
+                if ftol >= 1e-1:
+                    raise
         prior_util = q2_expected_response(
-            mmm, pooled, df, a0_weekly, prior_res.budgets
+            mmm, pooled, df, a0_weekly, prior_res.budgets, q2_cfg
         )
         print(
             f"[{time.time() - t1:.0f}s] OptQ2(prior) util={prior_util:.6g}",
@@ -113,11 +129,15 @@ def main() -> None:
         for i in range(args.n_outcomes):
             t_i = time.time()
             y_star = simulate_quarter(
-                mmm, idata, df, q1_cfg.window, a0, seed=args.seed + i
+                mmm, idata, df, q1_cfg.window, a0, q1_cfg, seed=args.seed + i
             )
             print(f"[{time.time()-t0:.0f}s] outcome {i}: simulate={time.time()-t_i:.1f}s", flush=True)
             t_i = time.time()
-            ell = quarter_log_likelihood(mmm, idata, df, q1_cfg.window, a0, y_star)
+            ell = quarter_log_likelihood(
+                mmm, idata, df, q1_cfg.window, a0, y_star,
+                baseline_weekly_spend=q1_cfg.weekly_spend,
+                baseline_quarterly=q1_cfg.planned,
+            )
             print(f"[{time.time()-t0:.0f}s] outcome {i}: loglik={time.time()-t_i:.1f}s", flush=True)
             t_i = time.time()
             psis = psis_weights(ell)
@@ -143,7 +163,7 @@ def main() -> None:
                     r = _solve_on_wrapper(w, q2_cfg, job)
                     print(f"[{time.time()-t0:.0f}s] outcome {i}: solve={time.time()-t_i:.1f}s", flush=True)
                     t_i = time.time()
-                    u = q2_expected_response(mmm, posterior_r, df, a0_weekly, r.budgets)
+                    u = q2_expected_response(mmm, posterior_r, df, a0_weekly, r.budgets, q2_cfg)
                     print(f"[{time.time()-t0:.0f}s] outcome {i}: utility={time.time()-t_i:.1f}s", flush=True)
                     utils.append(float(u))
                 except Exception as e:

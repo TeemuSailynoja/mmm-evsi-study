@@ -12,6 +12,31 @@ This is the "no drift" reference: every material decision gets an entry.
 
 ---
 
+## 2026-09-14 — Flighting-aware baseline utility & BO re-run
+
+- **[FIX]** `baseline_arm_evsi.py`: Added missing `q2_cfg` argument to
+  `q2_expected_response()` call in outcome loop (line 169). This was causing
+  all 200 outcomes to fail with "missing 1 required positional argument".
+- **[FIX]** `baseline_arm_evsi.py`: Added `a0_q2` baseline allocation for Q2
+  and passed it as `x0` to `allocate_budget()` retry loop to handle SLSQP
+  "positive directional derivative" failures.
+- **[RESULT]** Flighting-aware baseline utility: **1.36494e+09** (vs
+  pre-flighting ~1.418e9 which was computed without flighting patterns).
+- **[RESULT]** EVSI with flighting-aware spend: **6.816e+07 ± 5.18e+06**
+  (n=198 accepted, 2 skipped due to khat > 0.7).
+- **[RESULT]** BO re-run with 200 evaluations (flighting-aware):
+  - Best utility: 1.41129e+09
+  - Best Q1 loss: 2.98e-08 (essentially zero)
+  - Winner vs baseline delta: 2.91 ± 10.6 (95% CI [-18.09, 23.92])
+  - **Conclusion**: Baseline allocation remains near-optimal. Delta not
+    significant (CI includes zero). Consistent with 500-eval run findings.
+  - Wall time: 2143s (35.7 min).
+- **[NOTE]** The carry-in warning "training data ending 2018-01-28 is not
+  contiguous with the window starting 2018-05-06" is expected — there's a
+  1-week gap between Q1 end and Q2 start. The `CarryInBudgetOptimizer`
+  wrapper handles this by setting `carry_in_periods = l_max = 6` and using
+  a shared variable for Q1→Q2 spend transfer.
+
 ## 2026-09-13 — Stage 3 finalization (G3.3, G3.4 gate fixes)
 
 - **[GATE]** All 19 Stage 3 tests pass (16 gate + 3 supporting).
